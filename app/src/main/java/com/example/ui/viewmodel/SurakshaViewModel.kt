@@ -5,42 +5,54 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.ai.SurakshaAiRepository
+import com.example.data.firebase.SurakshaMessagingService
 import com.example.data.hardware.BleGattSensorAdapter
 import com.example.data.hardware.EnvScenario
+import com.example.data.hardware.SectorFusionSummary
 import com.example.data.hardware.SensorAdapterDescriptor
 import com.example.data.hardware.SensorArchitectureCatalog
 import com.example.data.hardware.SensorFusionProcessor
 import com.example.data.hardware.SlamEnvironmentFrame
 import com.example.data.hardware.SlamExportFormatter
+import com.example.data.hardware.SlamGatewayClient
 import com.example.data.hardware.WifiHttpGatewayAdapter
 import com.example.data.local.CachedSensorLogEntity
+import com.example.data.local.JoinedOrgEntity
 import com.example.data.local.OfflineCacheRepository
 import com.example.data.local.OfflineMapRegionEntity
 import com.example.data.local.PendingSyncOperationEntity
 import com.example.data.local.SlamSessionEntity
 import com.example.data.local.SurakshaPreferences
 import com.example.data.local.SurakshaSettings
+import com.example.data.local.SyncHistoryEntity
+import com.example.data.location.LocationFixState
+import com.example.data.location.SurakshaLocationBus
+import com.example.data.location.SurakshaLocationController
 import com.example.data.map.IndiaPlace
 import com.example.data.map.OsmTileManager
 import com.example.data.map.RegionDownloadProgress
+import com.example.data.map.RescueRoute
+import com.example.data.model.ActivityLogEntry
 import com.example.data.model.AiTriageReport
+import com.example.data.model.BlockedRoadMarker
+import com.example.data.model.DroneTelemetry
 import com.example.data.model.MapLayerConfig
+import com.example.data.model.NotificationDispatchRecord
 import com.example.data.model.OrgInvite
 import com.example.data.model.OrgMember
 import com.example.data.model.OrgRole
 import com.example.data.model.PresenceSignal
 import com.example.data.model.RescueLocation
+import com.example.data.model.RescueMission
 import com.example.data.model.RescueOrganization
 import com.example.data.model.RescueRegistryEntry
 import com.example.data.model.RescueTeam
 import com.example.data.model.SosIncident
 import com.example.data.model.SosIncidentStatus
+import com.example.data.model.SyncStatus
 import com.example.data.model.UserProfile
 import com.example.data.network.NetworkMonitor
 import com.example.data.network.NetworkState
-import com.example.data.location.LocationFixState
-import com.example.data.location.SurakshaLocationBus
-import com.example.data.location.SurakshaLocationController
 import com.example.data.repository.SurakshaRepository
 import com.example.data.sync.OfflineSyncManager
 import com.example.data.sync.SyncOperationExecutor
@@ -55,7 +67,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -89,11 +100,22 @@ data class OperationalAnalytics(
     val activeIncidentsCount: Int = 0,
     val unacknowledgedSosCount: Int = 0,
     val avgAckLatencyMinutes: Double? = null,
+    val disasterLocationsCount: Int = 0,
     val verifiedRegistryCount: Int = 0,
+    val verifiedSurvivorCount: Int = 0,
+    val missingPersonsCount: Int = 0,
+    val medicalRequestsCount: Int = 0,
     val estimatedSignalsCount: Int = 0,
+    val estimatedSurvivorSum: Int = 0,
     val fieldVerifiedSignalsCount: Int = 0,
     val deployedTeamsCount: Int = 0,
     val staleSensorsCount: Int = 0,
+    val contradictionAlertsCount: Int = 0,
+    val activeMissionsCount: Int = 0,
+    val blockedRoadsCount: Int = 0,
+    val onlineSensorsCount: Int = 0,
+    val offlineSensorsCount: Int = 0,
+    val deadLetterSyncCount: Int = 0,
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -142,9 +164,9 @@ class SurakshaViewModel(
         .map { state ->
             val members = (state as? DataUiState.Success)?.data.orEmpty()
             val mine = members.firstOrNull { it.userId == currentUserId }
-            mine?.let { OrgRole.fromValue(it.role) } ?: OrgRole.OPERATOR
+            mine?.let { OrgRole.fromValue(it.role) } ?: OrgRole.OBSERVER
         }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), OrgRole.OPERATOR)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), OrgRole.OBSERVER)
 
     val rescueTeamsState: StateFlow<DataUiState<List<RescueTeam>>> =
         activeOrgId.flatMapLatest { orgId ->
@@ -161,6 +183,12 @@ class SurakshaViewModel(
             if (orgId.isBlank()) flowOf(DataUiState.Loading) else repository.observePresenceSignals(orgId).toUiState("presence signals")
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), DataUiState.Loading)
 
+    val sectorSummaries: StateFlow<List<SectorFusionSummary>> = presenceSignalsState
+        .map { state ->
+            SensorFusionProcessor.summarizeSectors((state as? DataUiState.Success)?.data.orEmpty())
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
+
     val rescueRegistryState: StateFlow<DataUiState<List<RescueRegistryEntry>>> =
         activeOrgId.flatMapLatest { orgId ->
             if (orgId.isBlank()) flowOf(DataUiState.Loading) else repository.observeRescueRegistry(orgId).toUiState("rescue registry")
@@ -169,6 +197,31 @@ class SurakshaViewModel(
     val sosIncidentsState: StateFlow<DataUiState<List<SosIncident>>> =
         activeOrgId.flatMapLatest { orgId ->
             if (orgId.isBlank()) flowOf(DataUiState.Loading) else repository.observeSosIncidents(orgId).toUiState("SOS incidents")
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), DataUiState.Loading)
+
+    val notificationDispatchesState: StateFlow<DataUiState<List<NotificationDispatchRecord>>> =
+        activeOrgId.flatMapLatest { orgId ->
+            if (orgId.isBlank()) flowOf(DataUiState.Loading) else repository.observeNotificationDispatches(orgId).toUiState("notification dispatches")
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), DataUiState.Loading)
+
+    val activityLogsState: StateFlow<DataUiState<List<ActivityLogEntry>>> =
+        activeOrgId.flatMapLatest { orgId ->
+            if (orgId.isBlank()) flowOf(DataUiState.Loading) else repository.observeActivityLogs(orgId).toUiState("activity logs")
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), DataUiState.Loading)
+
+    val missionsState: StateFlow<DataUiState<List<RescueMission>>> =
+        activeOrgId.flatMapLatest { orgId ->
+            if (orgId.isBlank()) flowOf(DataUiState.Loading) else repository.observeMissions(orgId).toUiState("missions")
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), DataUiState.Loading)
+
+    val blockedRoadsState: StateFlow<DataUiState<List<BlockedRoadMarker>>> =
+        activeOrgId.flatMapLatest { orgId ->
+            if (orgId.isBlank()) flowOf(DataUiState.Loading) else repository.observeBlockedRoads(orgId).toUiState("blocked roads")
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), DataUiState.Loading)
+
+    val droneTelemetryState: StateFlow<DataUiState<List<DroneTelemetry>>> =
+        activeOrgId.flatMapLatest { orgId ->
+            if (orgId.isBlank()) flowOf(DataUiState.Loading) else repository.observeDroneTelemetry(orgId).toUiState("drone telemetry")
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), DataUiState.Loading)
 
     val offlineRegions: StateFlow<List<OfflineMapRegionEntity>> = offlineCache.offlineRegions
@@ -182,6 +235,10 @@ class SurakshaViewModel(
 
     val pendingSyncOps: StateFlow<List<PendingSyncOperationEntity>> = syncManager.pendingOperations
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
+    val syncHistory: StateFlow<List<SyncHistoryEntity>> = offlineCache.syncHistory
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
+    val joinedOrganizations: StateFlow<List<JoinedOrgEntity>> = offlineCache.joinedOrganizations
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
     val isSyncing: StateFlow<Boolean> = syncManager.isSyncing
     val lastSuccessfulSyncMillis: StateFlow<Long> = syncManager.lastSuccessfulSyncMillis
 
@@ -193,22 +250,70 @@ class SurakshaViewModel(
     private val _dashboardFilter = MutableStateFlow(DashboardFilterState())
     val dashboardFilter: StateFlow<DashboardFilterState> = _dashboardFilter.asStateFlow()
 
-    val analytics: StateFlow<OperationalAnalytics> = combine(
+    val sensorAdapters: StateFlow<List<SensorAdapterDescriptor>> = settings
+        .map { s ->
+            SensorArchitectureCatalog.buildAdapters(
+                context = appContext,
+                httpGatewayUrl = s.hardwareGatewayUrl,
+                httpGatewayToken = s.hardwareGatewayToken,
+            ).map { it.descriptor }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
+
+    private val coreCollectionsAnalyticsFlow = combine(
         sosIncidentsState,
         rescueRegistryState,
         presenceSignalsState,
         rescueTeamsState,
+        rescueLocationsState,
+    ) { sosState, regState, sigState, teamState, locState ->
+        listOf(sosState, regState, sigState, teamState, locState)
+    }
+
+    private val opsAuxAnalyticsFlow = combine(
+        missionsState,
+        blockedRoadsState,
+        pendingSyncOps,
+        sensorAdapters,
         _dashboardFilter,
-    ) { sosState, regState, sigState, teamState, filter ->
+    ) { mState, rState, syncOps, adapters, filter ->
+        listOf(mState, rState, syncOps, adapters, filter)
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    val analytics: StateFlow<OperationalAnalytics> = combine(
+        coreCollectionsAnalyticsFlow,
+        opsAuxAnalyticsFlow,
+    ) { core, aux ->
+        val sosState = core[0] as DataUiState<List<SosIncident>>
+        val regState = core[1] as DataUiState<List<RescueRegistryEntry>>
+        val sigState = core[2] as DataUiState<List<PresenceSignal>>
+        val teamState = core[3] as DataUiState<List<RescueTeam>>
+        val locState = core[4] as DataUiState<List<RescueLocation>>
+
+        val missionsStateVal = aux[0] as DataUiState<List<RescueMission>>
+        val roadsStateVal = aux[1] as DataUiState<List<BlockedRoadMarker>>
+        val syncOps = aux[2] as List<PendingSyncOperationEntity>
+        val adapters = aux[3] as List<SensorAdapterDescriptor>
+        val filter = aux[4] as DashboardFilterState
+
         val now = System.currentTimeMillis()
         val windowMs = filter.timeWindowHours * 3600_000L
+        val q = filter.searchQuery.trim()
         val sosList = (sosState as? DataUiState.Success)?.data.orEmpty().filter {
             (filter.teamFilter == "all" || it.teamCode == filter.teamFilter) &&
-                (windowMs == 0L || (now - (it.createdAt?.toDate()?.time ?: now)) <= windowMs)
+                (windowMs == 0L || (now - (it.createdAt?.toDate()?.time ?: now)) <= windowMs) &&
+                (q.isBlank() || it.description.contains(q, true) || it.incidentId.contains(q, true))
         }
         val regList = (regState as? DataUiState.Success)?.data.orEmpty()
         val sigList = (sigState as? DataUiState.Success)?.data.orEmpty()
         val teamList = (teamState as? DataUiState.Success)?.data.orEmpty()
+        val locList = (locState as? DataUiState.Success)?.data.orEmpty().filter {
+            filter.hazardFilter == "all" || it.hazardType == filter.hazardFilter
+        }
+        val missionList = (missionsStateVal as? DataUiState.Success)?.data.orEmpty()
+        val roadList = (roadsStateVal as? DataUiState.Success)?.data.orEmpty()
+        val summaries = SensorFusionProcessor.summarizeSectors(sigList)
 
         val ackLatencies = sosList.mapNotNull { inc ->
             val createdMs = inc.createdAt?.toDate()?.time
@@ -221,14 +326,25 @@ class SurakshaViewModel(
             activeIncidentsCount = sosList.count { it.status !in listOf("resolved", "closed") },
             unacknowledgedSosCount = sosList.count { it.status in listOf("created", "pending_delivery", "delivered") },
             avgAckLatencyMinutes = if (ackLatencies.isNotEmpty()) ackLatencies.average() else null,
+            disasterLocationsCount = locList.size,
             verifiedRegistryCount = regList.count { it.verificationStatus == "verified" },
+            verifiedSurvivorCount = regList.count { it.category == "verified_survivor" && it.verificationStatus == "verified" },
+            missingPersonsCount = regList.count { it.category == "missing_person" && it.rescueStatus != "resolved" },
+            medicalRequestsCount = regList.count { it.category == "medical_request" && it.rescueStatus != "resolved" },
             estimatedSignalsCount = sigList.count { it.verificationStatus in listOf("estimated", "unverified") },
+            estimatedSurvivorSum = summaries.sumOf { it.combinedMaxCount },
             fieldVerifiedSignalsCount = sigList.count { it.verificationStatus == "field_verified" },
             deployedTeamsCount = teamList.count { it.status == "deployed" || it.status == "active" },
             staleSensorsCount = sigList.count {
                 it.verificationStatus == "outdated" ||
                     (it.observationTimestampMillis > 0L && now - it.observationTimestampMillis > SensorFusionProcessor.STALE_THRESHOLD_MILLIS)
             },
+            contradictionAlertsCount = summaries.count { it.hasContradiction },
+            activeMissionsCount = missionList.count { it.status !in listOf("completed", "aborted") },
+            blockedRoadsCount = roadList.count { it.active },
+            onlineSensorsCount = adapters.count { it.sensorHealth == "healthy" },
+            offlineSensorsCount = adapters.count { it.sensorHealth != "healthy" },
+            deadLetterSyncCount = syncOps.count { it.syncStatus == SyncStatus.DEAD_LETTER.value },
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), OperationalAnalytics())
 
@@ -237,6 +353,9 @@ class SurakshaViewModel(
 
     private val _mapSearchResults = MutableStateFlow<List<IndiaPlace>>(emptyList())
     val mapSearchResults: StateFlow<List<IndiaPlace>> = _mapSearchResults.asStateFlow()
+
+    private val _activeRoute = MutableStateFlow<RescueRoute?>(null)
+    val activeRoute: StateFlow<RescueRoute?> = _activeRoute.asStateFlow()
 
     private val _selectedScenario = MutableStateFlow(EnvScenario.COLLAPSED_URBAN)
     val selectedScenario: StateFlow<EnvScenario> = _selectedScenario.asStateFlow()
@@ -252,12 +371,11 @@ class SurakshaViewModel(
     )
     val slamFrame: StateFlow<SlamEnvironmentFrame> = _slamFrame.asStateFlow()
 
-    val sensorAdapters: StateFlow<List<SensorAdapterDescriptor>> = settings
-        .map { s -> SensorArchitectureCatalog.buildAdapters(appContext, s.hardwareGatewayUrl).map { it.descriptor } }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
-
     private val _aiTriageState = MutableStateFlow<AiTriageUiState>(AiTriageUiState.Idle)
     val aiTriageState: StateFlow<AiTriageUiState> = _aiTriageState.asStateFlow()
+
+    private val _aiTriageHistory = MutableStateFlow<List<AiTriageReport>>(emptyList())
+    val aiTriageHistory: StateFlow<List<AiTriageReport>> = _aiTriageHistory.asStateFlow()
 
     private val _aiChatAnswer = MutableStateFlow<String?>(null)
     val aiChatAnswer: StateFlow<String?> = _aiChatAnswer.asStateFlow()
@@ -285,8 +403,27 @@ class SurakshaViewModel(
                 _activeOrgId.value = resolvedOrgId
                 preferences.setActiveOrgId(resolvedOrgId)
                 repository.seedDemoDatasetIfEmpty(resolvedOrgId)
+                SurakshaMessagingService.registerCurrentDeviceToken(
+                    context = appContext,
+                    orgId = resolvedOrgId,
+                    notificationsEnabled = settings.value.notificationsEnabled,
+                )
             }.onFailure { err ->
                 _actionStatusMessage.value = "Workspace init error: ${err.localizedMessage}"
+            }
+        }
+        viewModelScope.launch {
+            combine(currentOrganization, currentMemberRole) { orgState, role ->
+                (orgState as? DataUiState.Success)?.data to role
+            }.collect { (org, role) ->
+                if (org != null && org.id.isNotBlank()) {
+                    offlineCache.recordJoinedOrganization(
+                        orgId = org.id,
+                        orgName = org.orgName,
+                        orgCode = org.orgCode,
+                        role = role.value,
+                    )
+                }
             }
         }
         // Real-time continuous GPS push to assigned/active responder team when opted in
@@ -413,13 +550,50 @@ class SurakshaViewModel(
         }
     }
 
+    fun setHardwareGatewayToken(token: String) {
+        viewModelScope.launch {
+            preferences.setHardwareGatewayToken(token)
+            _actionStatusMessage.value = if (token.isBlank()) "Gateway Bearer token cleared." else "Saved gateway Bearer token."
+        }
+    }
+
+    fun setSlamGatewayUrl(url: String) {
+        viewModelScope.launch {
+            preferences.setSlamGatewayUrl(url)
+            _actionStatusMessage.value = if (url.isBlank()) "External SLAM URL cleared." else "Saved external SLAM URL."
+        }
+    }
+
+    fun setCustomTileServerUrl(url: String) {
+        viewModelScope.launch {
+            preferences.setCustomTileServerUrl(url)
+            _actionStatusMessage.value = if (url.isBlank()) "Custom tile server URL cleared." else "Saved custom tile server URL."
+        }
+    }
+
+    fun setNotificationsEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            preferences.setNotificationsEnabled(enabled)
+            val orgId = _activeOrgId.value
+            if (orgId.isNotBlank()) {
+                SurakshaMessagingService.registerCurrentDeviceToken(appContext, orgId, enabled)
+            }
+            _actionStatusMessage.value = if (enabled) "SOS push notifications enabled." else "SOS push notifications muted for this device."
+        }
+    }
+
     fun startOfflineRegionDownload(region: OfflineMapRegionEntity) {
         if (networkState.value == NetworkState.OFFLINE) {
             _actionStatusMessage.value = "Cannot download tiles while device is offline."
             return
         }
-        tileManager.startRegionDownload(viewModelScope, region, layerKind = if (_mapLayers.value.showTerrain) "topo" else "osm")
-        _actionStatusMessage.value = "Downloading real OSM tiles for ${region.title}..."
+        tileManager.startRegionDownload(
+            scope = viewModelScope,
+            region = region,
+            layerKind = if (_mapLayers.value.showTerrain) "topo" else "osm",
+            customTileTemplateUrl = settings.value.customTileServerUrl,
+        )
+        _actionStatusMessage.value = "Downloading policy-compliant map tiles for ${region.title}..."
     }
 
     fun cancelOfflineRegionDownload(regionId: String) {
@@ -434,6 +608,32 @@ class SurakshaViewModel(
         }
     }
 
+    fun computeRouteToSite(targetLat: Double, targetLon: Double) {
+        val fix = locationFixState.value as? LocationFixState.Available
+        val fallbackTeam = (rescueTeamsState.value as? DataUiState.Success)?.data
+            ?.firstOrNull { it.locationSharingOptIn && it.hasValidLocation }
+        val fromLat = fix?.latitude ?: fallbackTeam?.latitude ?: 28.6139
+        val fromLon = fix?.longitude ?: fallbackTeam?.longitude ?: 77.2090
+        val blocked = (blockedRoadsState.value as? DataUiState.Success)?.data.orEmpty()
+        val allowNet = !settings.value.offlineMapMode && networkState.value != NetworkState.OFFLINE
+        viewModelScope.launch {
+            val route = tileManager.computeRescueRoute(
+                fromLat = fromLat,
+                fromLon = fromLon,
+                toLat = targetLat,
+                toLon = targetLon,
+                blockedRoads = blocked,
+                allowNetwork = allowNet,
+            )
+            _activeRoute.value = route
+            _actionStatusMessage.value = "${route.sourceLabel}: ${String.format(Locale.US, "%.1f", route.distanceKm)} km"
+        }
+    }
+
+    fun clearActiveRoute() {
+        _activeRoute.value = null
+    }
+
     fun createOrganization(orgName: String, orgCode: String, region: String) {
         viewModelScope.launch {
             val res = repository.createOrganization(
@@ -446,6 +646,7 @@ class SurakshaViewModel(
             res.onSuccess { newOrgId ->
                 _activeOrgId.value = newOrgId
                 preferences.setActiveOrgId(newOrgId)
+                SurakshaMessagingService.registerCurrentDeviceToken(appContext, newOrgId, settings.value.notificationsEnabled)
                 _actionStatusMessage.value = "Created organization $orgName ($newOrgId) as Org Admin."
             }.onFailure {
                 _actionStatusMessage.value = it.localizedMessage ?: "Failed to create organization."
@@ -453,14 +654,45 @@ class SurakshaViewModel(
         }
     }
 
-    fun generateOrgInvite(inviteCode: String, defaultRole: String) {
+    fun switchOrganization(targetOrgId: String) {
+        viewModelScope.launch {
+            val res = repository.switchActiveOrganization(targetOrgId)
+            res.onSuccess { switched ->
+                _activeOrgId.value = switched
+                preferences.setActiveOrgId(switched)
+                SurakshaMessagingService.registerCurrentDeviceToken(appContext, switched, settings.value.notificationsEnabled)
+                _actionStatusMessage.value = "Switched command workspace to $switched."
+            }.onFailure {
+                _actionStatusMessage.value = it.localizedMessage ?: "Failed to switch organization."
+            }
+        }
+    }
+
+    fun generateOrgInvite(
+        inviteCode: String,
+        defaultRole: String,
+        expiresInHours: Long = 48L,
+        maxUses: Long = 25L,
+    ) {
         val orgId = _activeOrgId.value
         if (orgId.isBlank()) return
         viewModelScope.launch {
-            val res = repository.createOrgInvite(orgId, inviteCode, defaultRole)
+            val res = repository.createOrgInvite(orgId, inviteCode, defaultRole, expiresInHours, maxUses)
             _actionStatusMessage.value = res.fold(
-                onSuccess = { code -> "Invite code $code active ($defaultRole)." },
+                onSuccess = { code -> "Invite code $code active ($defaultRole, ${expiresInHours}h)." },
                 onFailure = { it.localizedMessage ?: "Failed to create invite (Admin required)." }
+            )
+        }
+    }
+
+    fun revokeOrgInvite(inviteCode: String) {
+        val orgId = _activeOrgId.value
+        if (orgId.isBlank()) return
+        viewModelScope.launch {
+            val res = repository.revokeOrgInvite(orgId, inviteCode)
+            _actionStatusMessage.value = res.fold(
+                onSuccess = { "Revoked invite code $inviteCode." },
+                onFailure = { it.localizedMessage ?: "Failed to revoke invite." }
             )
         }
     }
@@ -471,6 +703,7 @@ class SurakshaViewModel(
             res.onSuccess { joinedId ->
                 _activeOrgId.value = joinedId
                 preferences.setActiveOrgId(joinedId)
+                SurakshaMessagingService.registerCurrentDeviceToken(appContext, joinedId, settings.value.notificationsEnabled)
                 _actionStatusMessage.value = "Joined organization $joinedId."
             }.onFailure {
                 _actionStatusMessage.value = it.localizedMessage ?: "Failed to join organization."
@@ -486,6 +719,18 @@ class SurakshaViewModel(
             _actionStatusMessage.value = res.fold(
                 onSuccess = { "Updated member role to ${newRole.label}." },
                 onFailure = { it.localizedMessage ?: "Role change rejected (Org Admin only)." }
+            )
+        }
+    }
+
+    fun updateMyAvailability(availability: String) {
+        val orgId = _activeOrgId.value
+        if (orgId.isBlank()) return
+        viewModelScope.launch {
+            val res = repository.updateMemberAvailability(orgId, availability)
+            _actionStatusMessage.value = res.fold(
+                onSuccess = { "Duty status set to $availability." },
+                onFailure = { it.localizedMessage ?: "Failed to update availability." }
             )
         }
     }
@@ -516,13 +761,16 @@ class SurakshaViewModel(
 
     fun updateVoluntaryLocationSharing(enabled: Boolean) {
         viewModelScope.launch {
+            preferences.setLocationConsentEnabled(enabled)
             if (enabled) {
                 if (!locationController.hasLocationPermission()) {
+                    preferences.setLocationConsentEnabled(false)
                     SurakshaLocationBus.emit(LocationFixState.PermissionDenied())
                     _actionStatusMessage.value = "Grant location permission before enabling continuous GPS."
                     return@launch
                 }
                 if (!locationController.isDeviceLocationEnabled()) {
+                    preferences.setLocationConsentEnabled(false)
                     SurakshaLocationBus.emit(LocationFixState.GpsDisabled())
                     _actionStatusMessage.value = "Enable device GPS / Location services first."
                     return@launch
@@ -800,6 +1048,10 @@ class SurakshaViewModel(
         photoUriLocal: String = "",
         photoConsentGranted: Boolean = false,
         duplicateOfId: String = "",
+        medicalCategory: String = "",
+        medicalUrgency: String = "routine",
+        assignedMedicalTeam: String = "",
+        linkedIncidentId: String = "",
     ) {
         val orgId = _activeOrgId.value
         if (orgId.isBlank()) return
@@ -823,6 +1075,10 @@ class SurakshaViewModel(
                 informationSource = informationSource,
                 verificationNotes = if (duplicateOfId.isNotBlank()) "Flagged possible duplicate of $duplicateOfId" else "Logged by authenticated responder.",
                 duplicateOfId = duplicateOfId,
+                medicalCategory = medicalCategory,
+                medicalUrgency = medicalUrgency,
+                assignedMedicalTeam = assignedMedicalTeam,
+                linkedIncidentId = linkedIncidentId,
                 isSynthetic = settings.value.demoModeEnabled,
             )
             if (networkState.value == NetworkState.OFFLINE) {
@@ -840,6 +1096,10 @@ class SurakshaViewModel(
                         put("sensitiveContactMasked", entry.sensitiveContactMasked)
                         put("verificationStatus", entry.verificationStatus)
                         put("informationSource", entry.informationSource)
+                        put("medicalCategory", entry.medicalCategory)
+                        put("medicalUrgency", entry.medicalUrgency)
+                        put("assignedMedicalTeam", entry.assignedMedicalTeam)
+                        put("linkedIncidentId", entry.linkedIncidentId)
                         put("isSynthetic", entry.isSynthetic)
                     }
                 )
@@ -953,14 +1213,170 @@ class SurakshaViewModel(
         }
     }
 
+    fun createMission(
+        title: String,
+        description: String,
+        assignedTeamCode: String,
+        priority: String,
+        targetLatitude: Double,
+        targetLongitude: Double,
+        linkedIncidentId: String = "",
+    ) {
+        val orgId = _activeOrgId.value
+        if (orgId.isBlank()) return
+        viewModelScope.launch {
+            val res = repository.createMission(
+                orgId = orgId,
+                mission = RescueMission(
+                    orgId = orgId,
+                    title = title,
+                    description = description,
+                    linkedIncidentId = linkedIncidentId,
+                    assignedTeamCode = assignedTeamCode,
+                    priority = priority,
+                    status = "planned",
+                    targetLatitude = targetLatitude,
+                    targetLongitude = targetLongitude,
+                ),
+            )
+            _actionStatusMessage.value = res.fold(
+                onSuccess = { id -> "Mission $id dispatched ($assignedTeamCode)." },
+                onFailure = { it.localizedMessage ?: "Failed to create mission." }
+            )
+        }
+    }
+
+    fun updateMissionStatus(missionId: String, status: String) {
+        val orgId = _activeOrgId.value
+        if (orgId.isBlank()) return
+        viewModelScope.launch {
+            val res = repository.updateMissionStatus(orgId, missionId, status)
+            _actionStatusMessage.value = res.fold(
+                onSuccess = { "Mission updated to $status." },
+                onFailure = { it.localizedMessage ?: "Mission update failed." }
+            )
+        }
+    }
+
+    fun createBlockedRoad(
+        label: String,
+        latitude: Double,
+        longitude: Double,
+        severity: String,
+        notes: String,
+    ) {
+        val orgId = _activeOrgId.value
+        if (orgId.isBlank()) return
+        viewModelScope.launch {
+            val res = repository.createBlockedRoad(
+                orgId = orgId,
+                marker = BlockedRoadMarker(
+                    orgId = orgId,
+                    label = label,
+                    latitude = latitude,
+                    longitude = longitude,
+                    severity = severity,
+                    active = true,
+                    notes = notes,
+                ),
+            )
+            _actionStatusMessage.value = res.fold(
+                onSuccess = { "Flagged road obstacle '$label'." },
+                onFailure = { it.localizedMessage ?: "Failed to flag road obstacle." }
+            )
+        }
+    }
+
+    fun upsertDroneTelemetry(
+        callsign: String,
+        latitude: Double,
+        longitude: Double,
+        altitudeMeters: Double,
+        batteryPercent: Long,
+        status: String,
+        sourceKind: String = "simulated",
+    ) {
+        val orgId = _activeOrgId.value
+        if (orgId.isBlank()) return
+        viewModelScope.launch {
+            val res = repository.upsertDroneTelemetry(
+                orgId = orgId,
+                drone = DroneTelemetry(
+                    orgId = orgId,
+                    callsign = callsign,
+                    sourceKind = sourceKind,
+                    status = status,
+                    latitude = latitude,
+                    longitude = longitude,
+                    altitudeMeters = altitudeMeters,
+                    batteryPercent = batteryPercent,
+                ),
+            )
+            _actionStatusMessage.value = res.fold(
+                onSuccess = { "Updated UAV telemetry for $callsign ($sourceKind)." },
+                onFailure = { it.localizedMessage ?: "Failed to update UAV telemetry." }
+            )
+        }
+    }
+
+    fun fetchExternalSlamFrame() {
+        val url = settings.value.slamGatewayUrl.ifBlank { settings.value.hardwareGatewayUrl }
+        viewModelScope.launch {
+            val res = SlamGatewayClient.fetchExternalSlamFrame(url, settings.value.hardwareGatewayToken)
+            res.onSuccess { frame ->
+                _isSlamScanning.value = false
+                _slamFrame.value = frame
+                _actionStatusMessage.value = "Loaded live external SLAM grid (${frame.gridSize}x${frame.gridSize}, ${frame.scanCoveragePercent}% covered)."
+            }.onFailure { err ->
+                _actionStatusMessage.value = err.localizedMessage ?: "External SLAM fetch failed."
+            }
+        }
+    }
+
+    fun testEdgeGatewayHealth() {
+        viewModelScope.launch {
+            val adapter = WifiHttpGatewayAdapter(
+                gatewayBaseUrl = settings.value.hardwareGatewayUrl,
+                authToken = settings.value.hardwareGatewayToken,
+            )
+            val res = adapter.checkHealth()
+            _actionStatusMessage.value = res.fold(
+                onSuccess = { it },
+                onFailure = { it.localizedMessage ?: "Edge gateway health check failed." }
+            )
+        }
+    }
+
+    fun registerGatewayDevice() {
+        val orgId = _activeOrgId.value
+        if (orgId.isBlank()) return
+        viewModelScope.launch {
+            val adapter = WifiHttpGatewayAdapter(
+                gatewayBaseUrl = settings.value.hardwareGatewayUrl,
+                authToken = settings.value.hardwareGatewayToken,
+            )
+            val res = adapter.registerDevice("android_${currentUserId.take(8)}", orgId)
+            _actionStatusMessage.value = res.fold(
+                onSuccess = { "Device registered with Edge FastAPI Gateway." },
+                onFailure = { it.localizedMessage ?: "Edge gateway device registration failed." }
+            )
+        }
+    }
+
     fun pollSensorAdapter(adapterDescriptor: SensorAdapterDescriptor) {
         val orgId = _activeOrgId.value
         viewModelScope.launch {
             val adapter = when (adapterDescriptor.nodeId) {
-                "gw-http-fastapi" -> WifiHttpGatewayAdapter(settings.value.hardwareGatewayUrl)
+                "gw-http-fastapi" -> WifiHttpGatewayAdapter(
+                    gatewayBaseUrl = settings.value.hardwareGatewayUrl,
+                    authToken = settings.value.hardwareGatewayToken,
+                )
                 "hw-ble-gatt-01" -> BleGattSensorAdapter(appContext)
-                else -> SensorArchitectureCatalog.buildAdapters(appContext, settings.value.hardwareGatewayUrl)
-                    .firstOrNull { it.descriptor.nodeId == adapterDescriptor.nodeId }
+                else -> SensorArchitectureCatalog.buildAdapters(
+                    context = appContext,
+                    httpGatewayUrl = settings.value.hardwareGatewayUrl,
+                    httpGatewayToken = settings.value.hardwareGatewayToken,
+                ).firstOrNull { it.descriptor.nodeId == adapterDescriptor.nodeId }
             }
             if (adapter == null) {
                 _actionStatusMessage.value = "Adapter ${adapterDescriptor.nodeId} unavailable."
@@ -988,14 +1404,22 @@ class SurakshaViewModel(
                     repository.createPresenceSignal(orgId, sig)
                 }
             }
-            _actionStatusMessage.value = "Processed ${fused.signals.size} packet(s) (${fused.deduplicatedCount} deduplicated, ${fused.staleCount} stale)."
+            val contradictionMsg = if (fused.contradictionCount > 0) " • ${fused.contradictionCount} contradiction(s)!" else ""
+            _actionStatusMessage.value = "Processed ${fused.signals.size} packet(s) (${fused.deduplicatedCount} deduplicated, ${fused.staleCount} stale$contradictionMsg)."
         }
     }
 
     fun flushOfflineQueueNow() {
         viewModelScope.launch {
-            val (synced, failed) = syncManager.flushPendingQueue()
+            val (synced, failed) = syncManager.flushPendingQueue(forceIgnoreBackoff = true)
             _actionStatusMessage.value = "Sync complete: $synced uploaded, $failed failed."
+        }
+    }
+
+    fun retryPendingSyncOperation(operationId: String) {
+        viewModelScope.launch {
+            syncManager.retryOperationNow(operationId)
+            _actionStatusMessage.value = "Retried sync operation $operationId."
         }
     }
 
@@ -1005,6 +1429,7 @@ class SurakshaViewModel(
         val teams = (rescueTeamsState.value as? DataUiState.Success)?.data ?: emptyList()
         val registry = (rescueRegistryState.value as? DataUiState.Success)?.data ?: emptyList()
         val incidents = (sosIncidentsState.value as? DataUiState.Success)?.data ?: emptyList()
+        val lang = settings.value.languageCode
 
         viewModelScope.launch {
             _aiTriageState.value = AiTriageUiState.Loading
@@ -1015,9 +1440,23 @@ class SurakshaViewModel(
                 registry = registry,
                 incidents = incidents,
                 isDemoMode = settings.value.demoModeEnabled,
+                languageCode = lang,
             )
             _aiTriageState.value = result.fold(
-                onSuccess = { AiTriageUiState.Success(it) },
+                onSuccess = { report ->
+                    _aiTriageHistory.value = (listOf(report) + _aiTriageHistory.value).take(10)
+                    val orgId = _activeOrgId.value
+                    if (orgId.isNotBlank()) {
+                        repository.logOrgActivity(
+                            orgId = orgId,
+                            actorName = initialDisplayName,
+                            category = "ai",
+                            summary = "Generated Gemini triage (${report.modelUsed}, $lang)",
+                            targetId = "ai_triage_${report.generatedAtMillis}",
+                        )
+                    }
+                    AiTriageUiState.Success(report)
+                },
                 onFailure = { AiTriageUiState.Error(it.localizedMessage ?: "AI triage failed.") }
             )
         }
@@ -1029,6 +1468,7 @@ class SurakshaViewModel(
         val teams = (rescueTeamsState.value as? DataUiState.Success)?.data ?: emptyList()
         val registry = (rescueRegistryState.value as? DataUiState.Success)?.data ?: emptyList()
         val incidents = (sosIncidentsState.value as? DataUiState.Success)?.data ?: emptyList()
+        val lang = settings.value.languageCode
 
         viewModelScope.launch {
             _aiChatLoading.value = true
@@ -1040,6 +1480,7 @@ class SurakshaViewModel(
                 registry = registry,
                 incidents = incidents,
                 isDemoMode = settings.value.demoModeEnabled,
+                languageCode = lang,
             )
             _aiChatLoading.value = false
             _aiChatAnswer.value = result.fold(
@@ -1125,6 +1566,10 @@ class SurakshaViewModel(
                     sensitiveContactMasked = json.optString("sensitiveContactMasked"),
                     verificationStatus = json.optString("verificationStatus", "reported"),
                     informationSource = json.optString("informationSource", "Offline Field Queue"),
+                    medicalCategory = json.optString("medicalCategory", ""),
+                    medicalUrgency = json.optString("medicalUrgency", "routine"),
+                    assignedMedicalTeam = json.optString("assignedMedicalTeam", ""),
+                    linkedIncidentId = json.optString("linkedIncidentId", ""),
                     isSynthetic = json.optBoolean("isSynthetic", true),
                 ),
                 explicitId = docId,

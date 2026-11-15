@@ -58,6 +58,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.location.LocationFixState
 import com.example.data.map.OsmTileManager
+import com.example.data.map.RescueRoute
+import com.example.data.model.BlockedRoadMarker
+import com.example.data.model.DroneTelemetry
 import com.example.data.model.MapLayerConfig
 import com.example.data.model.PresenceSignal
 import com.example.data.model.RescueLocation
@@ -91,11 +94,15 @@ fun IndiaInteractiveMap(
     teams: List<RescueTeam>,
     signals: List<PresenceSignal> = emptyList(),
     registry: List<RescueRegistryEntry> = emptyList(),
+    blockedRoads: List<BlockedRoadMarker> = emptyList(),
+    drones: List<DroneTelemetry> = emptyList(),
+    activeRoute: RescueRoute? = null,
     layers: MapLayerConfig,
     isOfflineMode: Boolean,
     networkState: NetworkState = NetworkState.ONLINE_UNMETERED,
     deviceLocation: LocationFixState = LocationFixState.OptedOut(),
     tileManager: OsmTileManager? = null,
+    customTileTemplateUrl: String = "",
     focusLat: Double? = null,
     focusLon: Double? = null,
     focusZoom: Float? = null,
@@ -132,7 +139,7 @@ fun IndiaInteractiveMap(
     val tilePx = baseTilePx * 2.0.pow((zoomLevel - tileZ).toDouble()).toFloat()
 
     // Trigger real tile loading for currently visible viewport whenever camera or layer changes
-    LaunchedEffect(centerLat, centerLon, tileZ, layerKind, allowNetworkFetch, canvasWidthPx, canvasHeightPx) {
+    LaunchedEffect(centerLat, centerLon, tileZ, layerKind, allowNetworkFetch, customTileTemplateUrl, canvasWidthPx, canvasHeightPx) {
         if (tileManager == null) return@LaunchedEffect
         val (cxTile, cyTile) = OsmTileManager.latLonToFractionTile(centerLat, centerLon, tileZ)
         val halfTilesX = (canvasWidthPx / 2f / tilePx) + 1f
@@ -148,7 +155,14 @@ fun IndiaInteractiveMap(
                 val key = "$layerKind/$tileZ/$tx/$ty"
                 if (!loadedTiles.containsKey(key)) {
                     scope.launch {
-                        val bmp = tileManager.loadOrFetchTile(layerKind, tileZ, tx, ty, allowNetworkFetch)
+                        val bmp = tileManager.loadOrFetchTile(
+                            layerKind = layerKind,
+                            z = tileZ,
+                            x = tx,
+                            y = ty,
+                            allowNetwork = allowNetworkFetch,
+                            customTileTemplateUrl = customTileTemplateUrl,
+                        )
                         if (bmp != null) {
                             loadedTiles[key] = bmp
                             tileDrawRevision++
@@ -426,6 +440,58 @@ fun IndiaInteractiveMap(
                 }
             }
 
+            // 6b. Blocked Roads & Obstacles Layer
+            if (layers.showBlockedRoads) {
+                blockedRoads.filter { it.active }.forEach { road ->
+                    val pt = project(road.latitude, road.longitude, w, h)
+                    val color = if (road.severity == "blocked") StatusCritical else StatusUnverified
+                    val r = 8f
+                    val diamond = Path().apply {
+                        moveTo(pt.x, pt.y - r)
+                        lineTo(pt.x + r, pt.y)
+                        lineTo(pt.x, pt.y + r)
+                        lineTo(pt.x - r, pt.y)
+                        close()
+                    }
+                    drawPath(diamond, color = color)
+                    drawPath(diamond, color = Color.White, style = Stroke(width = 1.5f))
+                    drawMapLabel(textMeasurer, "X ${road.label.take(14)}", Offset(pt.x + 10f, pt.y - 6f), color)
+                }
+            }
+
+            // 6c. Drone / UAV Telemetry Layer
+            if (layers.showDroneTelemetry) {
+                drones.filter { it.status != "offline" }.forEach { drone ->
+                    val pt = project(drone.latitude, drone.longitude, w, h)
+                    val uavColor = Color(0xFF38BDF8)
+                    drawCircle(uavColor.copy(alpha = 0.25f), radius = 14f, center = pt)
+                    drawCircle(uavColor, radius = 5f, center = pt)
+                    drawLine(uavColor, Offset(pt.x - 10f, pt.y), Offset(pt.x + 10f, pt.y), strokeWidth = 1.8f)
+                    drawLine(uavColor, Offset(pt.x, pt.y - 10f), Offset(pt.x, pt.y + 10f), strokeWidth = 1.8f)
+                    drawMapLabel(textMeasurer, "${drone.callsign} (${drone.altitudeMeters.toInt()}m)", Offset(pt.x + 10f, pt.y - 7f), uavColor)
+                }
+            }
+
+            // 6d. Computed Rescue Route (OSRM road geometry or Offline Haversine vector)
+            if (layers.showMissionRoutes && activeRoute != null && activeRoute.points.size >= 2) {
+                val routePath = Path().apply {
+                    activeRoute.points.forEachIndexed { idx, (lat, lon) ->
+                        val pt = project(lat, lon, w, h)
+                        if (idx == 0) moveTo(pt.x, pt.y) else lineTo(pt.x, pt.y)
+                    }
+                }
+                val routeStroke = if (activeRoute.isRoadRouted) {
+                    Stroke(width = 5f)
+                } else {
+                    Stroke(width = 3.5f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f), 0f))
+                }
+                drawPath(
+                    path = routePath,
+                    color = if (activeRoute.isRoadRouted) StatusVerified else primaryColor,
+                    style = routeStroke,
+                )
+            }
+
             // 7. Device Live GPS Marker + Route/Distance Measurement Line
             if (deviceLocation is LocationFixState.Available) {
                 val userPt = project(deviceLocation.latitude, deviceLocation.longitude, w, h)
@@ -566,7 +632,11 @@ fun IndiaInteractiveMap(
                 .align(Alignment.BottomStart)
                 .padding(8.dp),
         ) {
-            val layerLabel = if (layers.showTerrain) "OpenTopoMap" else "OpenStreetMap"
+            val layerLabel = when {
+                customTileTemplateUrl.isNotBlank() -> "Custom Tile Mirror"
+                layers.showTerrain -> "OpenTopoMap"
+                else -> "OpenStreetMap"
+            }
             val netLabel = when {
                 isOfflineMode || networkState == NetworkState.OFFLINE -> "Offline Disk Tile Cache"
                 else -> "Live Tiles ($layerLabel)"

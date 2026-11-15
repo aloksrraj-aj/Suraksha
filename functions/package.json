@@ -1,0 +1,22 @@
+{
+  "name": "suraksha-functions",
+  "version": "2.0.0",
+  "description": "PROJECT SURAKSHA Cloud Functions for real SOS FCM dispatch, escalation, and command-center APIs",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test test/dispatchLogic.test.js",
+    "deploy": "firebase deploy --only functions"
+  },
+  "engines": {
+    "node": "20"
+  },
+  "main": "lib/index.js",
+  "dependencies": {
+    "firebase-admin": "^13.0.1",
+    "firebase-functions": "^6.1.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  },
+  "private": true
+}

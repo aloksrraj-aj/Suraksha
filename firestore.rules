@@ -41,8 +41,16 @@ service cloud.firestore {
         exists(/databases/$(database)/documents/organizations/$(orgId)/members/$(request.auth.uid));
     }
 
+    function memberData(orgId) {
+      return get(/databases/$(database)/documents/organizations/$(orgId)/members/$(request.auth.uid)).data;
+    }
+
     function memberRole(orgId) {
-      return get(/databases/$(database)/documents/organizations/$(orgId)/members/$(request.auth.uid)).data.role;
+      return memberData(orgId).role;
+    }
+
+    function memberTeamId(orgId) {
+      return memberData(orgId).teamId;
     }
 
     function isOrgAdmin(orgId) {
@@ -57,6 +65,27 @@ service cloud.firestore {
       return isOrgMember(orgId) && memberRole(orgId) in ['org_admin', 'team_leader', 'operator', 'medic'];
     }
 
+    function canUpdateTeamLocation(orgId, teamId) {
+      return isActiveResponder(orgId) && (
+        isTeamLeaderOrAdmin(orgId) ||
+        existing().leaderUid == request.auth.uid ||
+        existing().userId == request.auth.uid ||
+        memberTeamId(orgId) == teamId
+      );
+    }
+
+    function isLegalSosTransition(fromStatus, toStatus) {
+      return (fromStatus == toStatus) ||
+        (fromStatus == 'created' && toStatus in ['pending_delivery', 'delivered', 'failed']) ||
+        (fromStatus == 'pending_delivery' && toStatus in ['delivered', 'acknowledged', 'failed']) ||
+        (fromStatus == 'failed' && toStatus in ['pending_delivery', 'delivered']) ||
+        (fromStatus == 'delivered' && toStatus in ['acknowledged', 'team_assigned', 'responding', 'resolved', 'closed']) ||
+        (fromStatus == 'acknowledged' && toStatus in ['team_assigned', 'responding', 'resolved', 'closed']) ||
+        (fromStatus == 'team_assigned' && toStatus in ['responding', 'resolved', 'closed']) ||
+        (fromStatus == 'responding' && toStatus in ['resolved', 'closed']) ||
+        (fromStatus == 'resolved' && toStatus == 'closed');
+    }
+
     function isValidUserProfile(data, userId) {
       return data.userId == userId &&
         data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
@@ -69,6 +98,15 @@ service cloud.firestore {
         data.backgroundTrackingEnabled is bool;
     }
 
+    function isValidUserDeviceToken(data, userId, deviceId) {
+      return data.userId == userId &&
+        data.deviceId == deviceId &&
+        data.fcmToken is string && data.fcmToken.size() >= 10 && data.fcmToken.size() <= 512 &&
+        data.orgId is string && data.orgId.size() <= 128 &&
+        data.notificationsEnabled is bool &&
+        data.platform == 'android';
+    }
+
     function isValidOrganization(data) {
       return data.orgCode is string && data.orgCode.size() >= 2 && data.orgCode.size() <= 32 &&
         data.orgName is string && data.orgName.size() >= 2 && data.orgName.size() <= 100 &&
@@ -79,9 +117,12 @@ service cloud.firestore {
     function isValidOrgInvite(data, orgId, inviteCode) {
       return data.orgId == orgId &&
         data.inviteCode == inviteCode &&
-        data.inviteCode is string && data.inviteCode.size() >= 4 && data.inviteCode.size() <= 32 &&
+        data.inviteCode is string && data.inviteCode.size() >= 8 && data.inviteCode.size() <= 32 &&
         data.defaultRole in ['operator', 'observer'] &&
         data.active is bool &&
+        data.expiresAtMillis is int && data.expiresAtMillis > 0 &&
+        data.maxUses is int && data.maxUses >= 1 && data.maxUses <= 500 &&
+        data.usedCount is int && data.usedCount >= 0 && data.usedCount <= data.maxUses &&
         data.createdByUid is string && data.createdByUid.size() >= 1 && data.createdByUid.size() <= 128;
     }
 
@@ -111,7 +152,7 @@ service cloud.firestore {
         data.accuracyMeters is number && data.accuracyMeters >= 0 && data.accuracyMeters <= 50000 &&
         data.locationTimestampMillis is int && data.locationTimestampMillis >= 0 &&
         data.locationUnavailableReason is string && data.locationUnavailableReason.size() <= 120 &&
-        (!data.hasValidLocation || data.locationSharingOptIn) &&
+        (!data.hasValidLocation || (data.locationSharingOptIn && data.locationTimestampMillis > 0 && data.locationTimestampMillis <= request.time.toMillis() + 60000)) &&
         data.batteryPercent is int && data.batteryPercent >= 0 && data.batteryPercent <= 100 &&
         data.connectionStatus in ['online', 'offline', 'stale', 'low_bandwidth'] &&
         data.isSynthetic is bool;
@@ -204,6 +245,45 @@ service cloud.firestore {
         data.note is string && data.note.size() >= 1 && data.note.size() <= 300;
     }
 
+    function isValidActivityLog(data, orgId) {
+      return data.orgId == orgId &&
+        data.actorUid == request.auth.uid &&
+        data.category in ['sos', 'team', 'location', 'presence', 'registry', 'mission', 'invite', 'ai'] &&
+        data.summary is string && data.summary.size() >= 1 && data.summary.size() <= 240;
+    }
+
+    function isValidMission(data, orgId, missionId) {
+      return data.orgId == orgId &&
+        data.missionId == missionId &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+        data.assignedTeamId is string && data.assignedTeamId.size() <= 128 &&
+        data.assignedTeamCode is string && data.assignedTeamCode.size() <= 32 &&
+        data.priority in ['critical', 'high', 'moderate', 'routine'] &&
+        data.status in ['planned', 'dispatched', 'in_progress', 'completed', 'aborted'] &&
+        isValidLatLon(data.targetLatitude, data.targetLongitude) &&
+        data.createdByUid is string && data.createdByUid.size() >= 1 && data.createdByUid.size() <= 128;
+    }
+
+    function isValidBlockedRoad(data, orgId) {
+      return data.orgId == orgId &&
+        data.reportedByUid is string && data.reportedByUid.size() >= 1 && data.reportedByUid.size() <= 128 &&
+        data.label is string && data.label.size() >= 1 && data.label.size() <= 120 &&
+        isValidLatLon(data.latitude, data.longitude) &&
+        data.severity in ['blocked', 'restricted', 'hazard_caution'] &&
+        data.active is bool;
+    }
+
+    function isValidDroneTelemetry(data, orgId, droneId) {
+      return data.orgId == orgId &&
+        data.droneId == droneId &&
+        data.callsign is string && data.callsign.size() >= 1 && data.callsign.size() <= 32 &&
+        data.sourceKind in ['simulated', 'hardware'] &&
+        data.status in ['idle', 'airborne', 'returning', 'offline'] &&
+        isValidLatLon(data.latitude, data.longitude) &&
+        data.altitudeMeters is number && data.altitudeMeters >= 0 && data.altitudeMeters <= 10000 &&
+        data.batteryPercent is int && data.batteryPercent >= 0 && data.batteryPercent <= 100;
+    }
+
     // Legacy user-scoped profile & personal backward-compatibility collections
     match /users/{userId} {
       allow get: if isOwner(userId) && isValidId(userId);
@@ -221,6 +301,17 @@ service cloud.firestore {
         isValidTimestamp(incoming().updatedAt) &&
         incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'callsign', 'activeOrgId', 'teamId', 'teamName', 'role', 'locationSharingEnabled', 'backgroundTrackingEnabled', 'updatedAt']);
       allow delete: if isOwner(userId) && isValidId(userId);
+
+      // Device FCM token registration (owner-scoped only)
+      match /devices/{deviceId} {
+        allow get, list: if isOwner(userId) && isValidId(deviceId);
+        allow create, update: if isOwner(userId) && isValidId(deviceId) &&
+          incoming().keys().hasAll(['userId', 'deviceId', 'fcmToken', 'orgId', 'notificationsEnabled', 'platform', 'updatedAt']) &&
+          incoming().keys().hasOnly(['userId', 'deviceId', 'fcmToken', 'orgId', 'notificationsEnabled', 'platform', 'updatedAt']) &&
+          isValidTimestamp(incoming().updatedAt) &&
+          isValidUserDeviceToken(incoming(), userId, deviceId);
+        allow delete: if isOwner(userId) && isValidId(deviceId);
+      }
 
       // Preserve read access for legacy personal subcollections during migration
       match /rescue_teams/{docId} { allow read: if isOwner(userId); }
@@ -258,16 +349,28 @@ service cloud.firestore {
         allow list: if isOrgAdmin(orgId);
         allow create: if isOrgAdmin(orgId) && isValidId(inviteCode) &&
           incoming().createdByUid == request.auth.uid &&
-          incoming().keys().hasAll(['orgId', 'inviteCode', 'defaultRole', 'active', 'createdByUid', 'createdAt', 'updatedAt']) &&
-          incoming().keys().hasOnly(['orgId', 'inviteCode', 'defaultRole', 'active', 'createdByUid', 'createdAt', 'updatedAt']) &&
+          incoming().usedCount == 0 &&
+          incoming().expiresAtMillis > request.time.toMillis() &&
+          incoming().keys().hasAll(['orgId', 'inviteCode', 'defaultRole', 'active', 'expiresAtMillis', 'maxUses', 'usedCount', 'createdByUid', 'createdAt', 'updatedAt']) &&
+          incoming().keys().hasOnly(['orgId', 'inviteCode', 'defaultRole', 'active', 'expiresAtMillis', 'maxUses', 'usedCount', 'createdByUid', 'createdAt', 'updatedAt']) &&
           isValidTimestamp(incoming().createdAt) &&
           isValidTimestamp(incoming().updatedAt) &&
           isValidOrgInvite(incoming(), orgId, inviteCode);
-        allow update: if isOrgAdmin(orgId) && isValidId(inviteCode) &&
-          isValidOrgInvite(incoming(), orgId, inviteCode) &&
+        allow update: if isValidId(inviteCode) && isValidOrgInvite(incoming(), orgId, inviteCode) &&
           incoming().createdAt == existing().createdAt &&
-          isValidTimestamp(incoming().updatedAt) &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['active', 'defaultRole', 'updatedAt']);
+          incoming().createdByUid == existing().createdByUid &&
+          isValidTimestamp(incoming().updatedAt) && (
+            (isOrgAdmin(orgId) && incoming().diff(existing()).affectedKeys().hasOnly(['active', 'defaultRole', 'expiresAtMillis', 'maxUses', 'updatedAt'])) ||
+            // Atomic invite redemption during member creation transaction
+            (isSignedIn() &&
+              existing().active == true &&
+              existing().usedCount < existing().maxUses &&
+              existing().expiresAtMillis > request.time.toMillis() &&
+              incoming().usedCount == existing().usedCount + 1 &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['usedCount', 'updatedAt']) &&
+              !exists(/databases/$(database)/documents/organizations/$(orgId)/members/$(request.auth.uid)) &&
+              existsAfter(/databases/$(database)/documents/organizations/$(orgId)/members/$(request.auth.uid)))
+          );
         allow delete: if isOrgAdmin(orgId) && isValidId(inviteCode);
       }
 
@@ -284,12 +387,15 @@ service cloud.firestore {
             (request.auth.uid == memberUid &&
               incoming().role == 'org_admin' &&
               get(/databases/$(database)/documents/organizations/$(orgId)).data.createdByUid == request.auth.uid) ||
-            // 2. Self-joining via an active invite code (restricted to operator or observer)
+            // 2. Self-joining via an active, unexpired, unexhausted high-entropy invite code
             (request.auth.uid == memberUid &&
               incoming().role in ['operator', 'observer'] &&
-              incoming().inviteCode.size() >= 4 &&
+              incoming().inviteCode.size() >= 8 &&
               exists(/databases/$(database)/documents/organizations/$(orgId)/invites/$(incoming().inviteCode)) &&
-              get(/databases/$(database)/documents/organizations/$(orgId)/invites/$(incoming().inviteCode)).data.active == true) ||
+              get(/databases/$(database)/documents/organizations/$(orgId)/invites/$(incoming().inviteCode)).data.active == true &&
+              get(/databases/$(database)/documents/organizations/$(orgId)/invites/$(incoming().inviteCode)).data.expiresAtMillis > request.time.toMillis() &&
+              get(/databases/$(database)/documents/organizations/$(orgId)/invites/$(incoming().inviteCode)).data.usedCount < get(/databases/$(database)/documents/organizations/$(orgId)/invites/$(incoming().inviteCode)).data.maxUses &&
+              incoming().role == get(/databases/$(database)/documents/organizations/$(orgId)/invites/$(incoming().inviteCode)).data.defaultRole) ||
             // 3. Existing org admin adding a member
             isOrgAdmin(orgId)
           );
@@ -301,7 +407,7 @@ service cloud.firestore {
           isValidTimestamp(incoming().updatedAt) && (
             // Only org_admin can change roles or team assignments
             (isOrgAdmin(orgId) && incoming().diff(existing()).affectedKeys().hasOnly(['role', 'teamId', 'availability', 'displayName', 'callsign', 'updatedAt'])) ||
-            // Non-admin member can only update own availability/callsign (never role!)
+            // Non-admin member can only update own availability/callsign/displayName (never role or teamId!)
             (request.auth.uid == memberUid &&
               incoming().role == existing().role &&
               incoming().teamId == existing().teamId &&
@@ -320,13 +426,17 @@ service cloud.firestore {
           isValidTimestamp(incoming().createdAt) &&
           isValidTimestamp(incoming().updatedAt) &&
           isValidRescueTeam(incoming(), orgId);
-        allow update: if isActiveResponder(orgId) && isValidId(teamId) &&
+        allow update: if canUpdateTeamLocation(orgId, teamId) && isValidId(teamId) &&
           isValidRescueTeam(incoming(), orgId) &&
           incoming().orgId == existing().orgId &&
+          incoming().userId == existing().userId &&
           incoming().createdAt == existing().createdAt &&
-          isValidTimestamp(incoming().updatedAt) && (
+          isValidTimestamp(incoming().updatedAt) &&
+          // Monotonic timestamp check when updating valid location fixes
+          (!incoming().hasValidLocation || !existing().hasValidLocation || incoming().locationTimestampMillis >= existing().locationTimestampMillis) && (
             isTeamLeaderOrAdmin(orgId) ||
-            (incoming().diff(existing()).affectedKeys().hasOnly(['locationSharingOptIn', 'hasValidLocation', 'latitude', 'longitude', 'accuracyMeters', 'locationTimestampMillis', 'locationUnavailableReason', 'batteryPercent', 'connectionStatus', 'updatedAt']))
+            (incoming().leaderUid == existing().leaderUid &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['locationSharingOptIn', 'hasValidLocation', 'latitude', 'longitude', 'accuracyMeters', 'locationTimestampMillis', 'locationUnavailableReason', 'batteryPercent', 'connectionStatus', 'updatedAt']))
           );
         allow delete: if isOrgAdmin(orgId) && isValidId(teamId);
       }
@@ -355,7 +465,6 @@ service cloud.firestore {
         allow list: if isOrgMember(orgId);
         allow create: if isActiveResponder(orgId) && isValidId(signalId) &&
           incoming().userId == request.auth.uid &&
-          // Critical rule: A simulated or newly ingested signal can NEVER be created directly as field_verified!
           incoming().verificationStatus in ['estimated', 'unverified'] &&
           incoming().keys().hasAll(['orgId', 'userId', 'locationId', 'sectorLabel', 'signalType', 'sourceKind', 'deviceId', 'calibrationStatus', 'sensorHealth', 'latitude', 'longitude', 'hasCoordinates', 'estimatedMinCount', 'estimatedMaxCount', 'confidencePercent', 'verificationStatus', 'dataSource', 'verifiedByUid', 'verificationNotes', 'observationTimestampMillis', 'isSynthetic', 'createdAt', 'updatedAt']) &&
           incoming().keys().hasOnly(['orgId', 'userId', 'locationId', 'sectorLabel', 'signalType', 'sourceKind', 'deviceId', 'calibrationStatus', 'sensorHealth', 'latitude', 'longitude', 'hasCoordinates', 'estimatedMinCount', 'estimatedMaxCount', 'confidencePercent', 'verificationStatus', 'dataSource', 'verifiedByUid', 'verificationNotes', 'observationTimestampMillis', 'isSynthetic', 'createdAt', 'updatedAt']) &&
@@ -369,7 +478,6 @@ service cloud.firestore {
           incoming().isSynthetic == existing().isSynthetic &&
           incoming().createdAt == existing().createdAt &&
           isValidTimestamp(incoming().updatedAt) &&
-          // Simulated signals can NEVER be marked field_verified; hardware field_verified requires verifier UID & notes
           (incoming().verificationStatus != 'field_verified' ||
             (existing().sourceKind == 'hardware' && !existing().isSynthetic &&
              incoming().verifiedByUid == request.auth.uid && incoming().verificationNotes.size() >= 3)) &&
@@ -383,7 +491,7 @@ service cloud.firestore {
         allow create: if isActiveResponder(orgId) && isValidId(entryId) &&
           incoming().userId == request.auth.uid &&
           incoming().keys().hasAll(['orgId', 'userId', 'category', 'title', 'locationName', 'latitude', 'longitude', 'hasCoordinates', 'details', 'sensitiveContactMasked', 'photoUriLocal', 'photoConsentGranted', 'rescueStatus', 'verificationStatus', 'informationSource', 'verifierUid', 'verificationNotes', 'duplicateOfId', 'isSynthetic', 'createdAt', 'updatedAt']) &&
-          incoming().keys().hasOnly(['orgId', 'userId', 'category', 'title', 'locationName', 'latitude', 'longitude', 'hasCoordinates', 'details', 'sensitiveContactMasked', 'photoUriLocal', 'photoConsentGranted', 'rescueStatus', 'verificationStatus', 'informationSource', 'verifierUid', 'verificationNotes', 'duplicateOfId', 'isSynthetic', 'createdAt', 'updatedAt']) &&
+          incoming().keys().hasOnly(['orgId', 'userId', 'category', 'title', 'locationName', 'latitude', 'longitude', 'hasCoordinates', 'details', 'sensitiveContactMasked', 'photoUriLocal', 'photoConsentGranted', 'rescueStatus', 'verificationStatus', 'informationSource', 'verifierUid', 'verificationNotes', 'duplicateOfId', 'medicalCategory', 'medicalUrgency', 'assignedMedicalTeam', 'linkedIncidentId', 'isSynthetic', 'createdAt', 'updatedAt']) &&
           isValidTimestamp(incoming().createdAt) &&
           isValidTimestamp(incoming().updatedAt) &&
           isValidRegistryEntry(incoming(), orgId);
@@ -392,7 +500,7 @@ service cloud.firestore {
           incoming().orgId == existing().orgId &&
           incoming().createdAt == existing().createdAt &&
           isValidTimestamp(incoming().updatedAt) &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['category', 'title', 'locationName', 'latitude', 'longitude', 'hasCoordinates', 'details', 'sensitiveContactMasked', 'photoUriLocal', 'photoConsentGranted', 'rescueStatus', 'verificationStatus', 'informationSource', 'verifierUid', 'verificationNotes', 'duplicateOfId', 'updatedAt']);
+          incoming().diff(existing()).affectedKeys().hasOnly(['category', 'title', 'locationName', 'latitude', 'longitude', 'hasCoordinates', 'details', 'sensitiveContactMasked', 'photoUriLocal', 'photoConsentGranted', 'rescueStatus', 'verificationStatus', 'informationSource', 'verifierUid', 'verificationNotes', 'duplicateOfId', 'medicalCategory', 'medicalUrgency', 'assignedMedicalTeam', 'linkedIncidentId', 'updatedAt']);
         allow delete: if isTeamLeaderOrAdmin(orgId) && isValidId(entryId);
       }
 
@@ -402,8 +510,10 @@ service cloud.firestore {
         allow create: if isActiveResponder(orgId) && isValidId(incidentId) &&
           incoming().senderUid == request.auth.uid &&
           incoming().status in ['created', 'pending_delivery', 'delivered'] &&
+          incoming().acknowledgedByUid == '' &&
+          incoming().acknowledgedAtMillis == 0 &&
           incoming().keys().hasAll(['incidentId', 'orgId', 'senderUid', 'senderName', 'teamCode', 'priority', 'description', 'status', 'hasLocation', 'latitude', 'longitude', 'accuracyMeters', 'assignedTeamId', 'assignedTeamCode', 'acknowledgedByUid', 'acknowledgedAtMillis', 'deliveryNote', 'isSynthetic', 'createdAt', 'updatedAt']) &&
-          incoming().keys().hasOnly(['incidentId', 'orgId', 'senderUid', 'senderName', 'teamCode', 'priority', 'description', 'status', 'hasLocation', 'latitude', 'longitude', 'accuracyMeters', 'assignedTeamId', 'assignedTeamCode', 'acknowledgedByUid', 'acknowledgedAtMillis', 'deliveryNote', 'isSynthetic', 'createdAt', 'updatedAt']) &&
+          incoming().keys().hasOnly(['incidentId', 'orgId', 'senderUid', 'senderName', 'teamCode', 'priority', 'description', 'status', 'hasLocation', 'latitude', 'longitude', 'accuracyMeters', 'assignedTeamId', 'assignedTeamCode', 'acknowledgedByUid', 'acknowledgedAtMillis', 'deliveryNote', 'notificationStatus', 'pushAttemptedCount', 'isSynthetic', 'createdAt', 'updatedAt']) &&
           isValidTimestamp(incoming().createdAt) &&
           isValidTimestamp(incoming().updatedAt) &&
           isValidSosIncident(incoming(), orgId, incidentId);
@@ -412,13 +522,27 @@ service cloud.firestore {
           incoming().orgId == existing().orgId &&
           incoming().incidentId == existing().incidentId &&
           incoming().senderUid == existing().senderUid &&
+          incoming().senderName == existing().senderName &&
+          incoming().teamCode == existing().teamCode &&
+          incoming().priority == existing().priority &&
+          incoming().description == existing().description &&
+          incoming().hasLocation == existing().hasLocation &&
+          incoming().latitude == existing().latitude &&
+          incoming().longitude == existing().longitude &&
+          incoming().accuracyMeters == existing().accuracyMeters &&
+          incoming().isSynthetic == existing().isSynthetic &&
           incoming().createdAt == existing().createdAt &&
           isValidTimestamp(incoming().updatedAt) &&
-          // Terminal state locking once closed
-          existing().status != 'closed' && (
+          // Terminal state locking once closed & strict state machine validation
+          existing().status != 'closed' &&
+          isLegalSosTransition(existing().status, incoming().status) &&
+          // Ack attribution lock: only authentic actor can set acknowledgedByUid, and once set it is immutable
+          (existing().acknowledgedByUid == ''
+            ? (incoming().status != 'acknowledged' || (incoming().acknowledgedByUid == request.auth.uid && incoming().acknowledgedAtMillis > 0))
+            : incoming().acknowledgedByUid == existing().acknowledgedByUid) && (
             // Team leader / admin can assign, respond, resolve, or close
             (isTeamLeaderOrAdmin(orgId) && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'assignedTeamId', 'assignedTeamCode', 'acknowledgedByUid', 'acknowledgedAtMillis', 'deliveryNote', 'updatedAt'])) ||
-            // Active responder can acknowledge or mark responding (cannot resolve/close)
+            // Active responder can acknowledge or mark responding (cannot assign teams, resolve, or close)
             (incoming().status in ['delivered', 'acknowledged', 'responding'] &&
               incoming().diff(existing()).affectedKeys().hasOnly(['status', 'acknowledgedByUid', 'acknowledgedAtMillis', 'deliveryNote', 'updatedAt']))
           );
@@ -433,6 +557,74 @@ service cloud.firestore {
             isValidSosAuditLog(incoming(), orgId, incidentId);
           allow update, delete: if false;
         }
+      }
+
+      // Server-side SOS notification dispatches (written ONLY by Admin SDK / Cloud Functions)
+      match /notification_dispatches/{dispatchId} {
+        allow get, list: if isOrgMember(orgId);
+        allow create, update, delete: if false;
+      }
+
+      // Immutable Organization Activity History Timeline
+      match /activity_logs/{logId} {
+        allow get, list: if isOrgMember(orgId);
+        allow create: if isActiveResponder(orgId) && isValidId(logId) &&
+          incoming().keys().hasAll(['orgId', 'actorUid', 'actorName', 'category', 'summary', 'targetId', 'createdAt']) &&
+          incoming().keys().hasOnly(['orgId', 'actorUid', 'actorName', 'category', 'summary', 'targetId', 'createdAt']) &&
+          isValidTimestamp(incoming().createdAt) &&
+          isValidActivityLog(incoming(), orgId);
+        allow update, delete: if false;
+      }
+
+      // Rescue Missions & Team Routing Assignments
+      match /missions/{missionId} {
+        allow get, list: if isOrgMember(orgId);
+        allow create: if isTeamLeaderOrAdmin(orgId) && isValidId(missionId) &&
+          incoming().createdByUid == request.auth.uid &&
+          incoming().keys().hasAll(['missionId', 'orgId', 'title', 'description', 'linkedIncidentId', 'assignedTeamId', 'assignedTeamCode', 'priority', 'status', 'targetLatitude', 'targetLongitude', 'createdByUid', 'createdAt', 'updatedAt']) &&
+          incoming().keys().hasOnly(['missionId', 'orgId', 'title', 'description', 'linkedIncidentId', 'assignedTeamId', 'assignedTeamCode', 'priority', 'status', 'targetLatitude', 'targetLongitude', 'createdByUid', 'createdAt', 'updatedAt']) &&
+          isValidTimestamp(incoming().createdAt) &&
+          isValidTimestamp(incoming().updatedAt) &&
+          isValidMission(incoming(), orgId, missionId);
+        allow update: if isActiveResponder(orgId) && isValidId(missionId) &&
+          isValidMission(incoming(), orgId, missionId) &&
+          incoming().orgId == existing().orgId &&
+          incoming().missionId == existing().missionId &&
+          incoming().createdByUid == existing().createdByUid &&
+          incoming().createdAt == existing().createdAt &&
+          isValidTimestamp(incoming().updatedAt) && (
+            isTeamLeaderOrAdmin(orgId) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          );
+        allow delete: if isOrgAdmin(orgId) && isValidId(missionId);
+      }
+
+      // Blocked Roads & Route Hazard Markers
+      match /blocked_roads/{roadId} {
+        allow get, list: if isOrgMember(orgId);
+        allow create: if isActiveResponder(orgId) && isValidId(roadId) &&
+          incoming().reportedByUid == request.auth.uid &&
+          incoming().keys().hasAll(['orgId', 'reportedByUid', 'label', 'latitude', 'longitude', 'severity', 'active', 'notes', 'createdAt', 'updatedAt']) &&
+          incoming().keys().hasOnly(['orgId', 'reportedByUid', 'label', 'latitude', 'longitude', 'severity', 'active', 'notes', 'createdAt', 'updatedAt']) &&
+          isValidTimestamp(incoming().createdAt) &&
+          isValidTimestamp(incoming().updatedAt) &&
+          isValidBlockedRoad(incoming(), orgId);
+        allow update: if isActiveResponder(orgId) && isValidId(roadId) &&
+          isValidBlockedRoad(incoming(), orgId) &&
+          incoming().orgId == existing().orgId &&
+          incoming().createdAt == existing().createdAt &&
+          isValidTimestamp(incoming().updatedAt) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['label', 'severity', 'active', 'notes', 'updatedAt']);
+        allow delete: if isTeamLeaderOrAdmin(orgId) && isValidId(roadId);
+      }
+
+      // Modular UAV / Drone Rescue Telemetry
+      match /drone_telemetry/{droneId} {
+        allow get, list: if isOrgMember(orgId);
+        allow create, update: if isActiveResponder(orgId) && isValidId(droneId) &&
+          isValidDroneTelemetry(incoming(), orgId, droneId) &&
+          isValidTimestamp(incoming().updatedAt);
+        allow delete: if isTeamLeaderOrAdmin(orgId) && isValidId(droneId);
       }
     }
   }

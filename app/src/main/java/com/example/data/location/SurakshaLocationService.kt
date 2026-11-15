@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.location.Location
 import android.os.Build
 import android.os.IBinder
 import android.os.Looper
@@ -17,6 +18,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.example.MainActivity
 import com.example.R
+import com.example.data.local.SurakshaPreferences
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationAvailability
 import com.google.android.gms.location.LocationCallback
@@ -28,6 +30,7 @@ class SurakshaLocationService : Service() {
 
     private lateinit var fusedClient: FusedLocationProviderClient
     private var locationCallback: LocationCallback? = null
+    private var lastAcceptedLocation: Location? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -38,10 +41,16 @@ class SurakshaLocationService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
+                SurakshaPreferences.persistLocationConsentSync(this, false)
                 stopUpdatesAndSelf()
                 return START_NOT_STICKY
             }
             ACTION_START, null -> {
+                // Enforce persisted opt-in consent on start & OS START_STICKY restarts
+                if (!SurakshaPreferences.isLocationConsentPersisted(this)) {
+                    stopUpdatesAndSelf()
+                    return START_NOT_STICKY
+                }
                 val notification = buildNotification("Active continuous rescue GPS tracking (voluntary)")
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     startForeground(
@@ -70,6 +79,7 @@ class SurakshaLocationService : Service() {
         ) == PackageManager.PERMISSION_GRANTED
 
         if (!hasPerm) {
+            SurakshaPreferences.persistLocationConsentSync(this, false)
             SurakshaLocationBus.emit(LocationFixState.PermissionDenied())
             stopUpdatesAndSelf()
             return
@@ -85,8 +95,13 @@ class SurakshaLocationService : Service() {
 
         val callback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
+                if (!SurakshaPreferences.isLocationConsentPersisted(this@SurakshaLocationService)) {
+                    stopUpdatesAndSelf()
+                    return
+                }
                 val loc = result.lastLocation ?: return
-                if (!SurakshaLocationController.isValidCoordinate(loc.latitude, loc.longitude)) return
+                if (!SurakshaLocationController.shouldAcceptFix(loc, lastAcceptedLocation)) return
+                lastAcceptedLocation = loc
                 SurakshaLocationBus.emit(
                     LocationFixState.Available(
                         latitude = loc.latitude,

@@ -25,7 +25,7 @@ enum class OrgRole(val value: String, val label: String) {
 
 enum class SosIncidentStatus(val value: String, val label: String) {
     CREATED("created", "Created"),
-    PENDING_DELIVERY("pending_delivery", "Pending Delivery"),
+    PENDING_DELIVERY("pending_delivery", "Pending Sync"),
     DELIVERED("delivered", "Server Saved"),
     ACKNOWLEDGED("acknowledged", "Acknowledged"),
     TEAM_ASSIGNED("team_assigned", "Team Assigned"),
@@ -45,6 +45,7 @@ enum class SyncStatus(val value: String, val label: String) {
     PENDING_SYNC("pending_sync", "Pending Sync"),
     SERVER_SAVED("server_saved", "Server Saved"),
     FAILED("sync_failed", "Sync Failed"),
+    DEAD_LETTER("dead_letter", "Max Retries Exceeded"),
 }
 
 @IgnoreExtraProperties
@@ -81,10 +82,19 @@ data class OrgInvite(
     val inviteCode: String = "",
     val defaultRole: String = "operator",
     val active: Boolean = true,
+    val expiresAtMillis: Long = 0L,
+    val maxUses: Long = 25L,
+    val usedCount: Long = 0L,
     val createdByUid: String = "",
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null,
-)
+) {
+    fun isRedeemable(nowMillis: Long = System.currentTimeMillis()): Boolean {
+        return active &&
+            usedCount < maxUses &&
+            (expiresAtMillis == 0L || expiresAtMillis > nowMillis)
+    }
+}
 
 @IgnoreExtraProperties
 data class OrgMember(
@@ -194,6 +204,10 @@ data class RescueRegistryEntry(
     val verifierUid: String = "",
     val verificationNotes: String = "",
     val duplicateOfId: String = "",
+    val medicalCategory: String = "",
+    val medicalUrgency: String = "routine", // "critical", "urgent", "routine"
+    val assignedMedicalTeam: String = "",
+    val linkedIncidentId: String = "",
     val isSynthetic: Boolean = false,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null,
@@ -218,7 +232,9 @@ data class SosIncident(
     val assignedTeamCode: String = "",
     val acknowledgedByUid: String = "",
     val acknowledgedAtMillis: Long = 0L,
-    val deliveryNote: String = "Saved to Firestore dispatch; FCM push requires trusted backend trigger.",
+    val deliveryNote: String = "Saved to Firestore; awaiting Cloud Function FCM dispatch.",
+    val notificationStatus: String = "pending_push", // "pending_push", "fcm_accepted", "fcm_failed", "no_tokens", "sms_dispatched"
+    val pushAttemptedCount: Long = 0L,
     val isSynthetic: Boolean = false,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null,
@@ -234,6 +250,84 @@ data class SosAuditLog(
     val toStatus: String = "",
     val note: String = "",
     @ServerTimestamp val createdAt: Timestamp? = null,
+)
+
+@IgnoreExtraProperties
+data class NotificationDispatchRecord(
+    @DocumentId val id: String = "",
+    val dispatchKey: String = "",
+    val orgId: String = "",
+    val incidentId: String = "",
+    val eventKind: String = "",
+    val status: String = "",
+    val targetTokenCount: Long = 0L,
+    val successCount: Long = 0L,
+    val failureCount: Long = 0L,
+    val smsDispatched: Boolean = false,
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val completedAt: Timestamp? = null,
+)
+
+@IgnoreExtraProperties
+data class ActivityLogEntry(
+    @DocumentId val id: String = "",
+    val orgId: String = "",
+    val actorUid: String = "",
+    val actorName: String = "",
+    val category: String = "", // "sos", "team", "location", "presence", "registry", "mission", "invite", "ai"
+    val summary: String = "",
+    val targetId: String = "",
+    @ServerTimestamp val createdAt: Timestamp? = null,
+)
+
+@IgnoreExtraProperties
+data class RescueMission(
+    @DocumentId val id: String = "",
+    val missionId: String = "",
+    val orgId: String = "",
+    val title: String = "",
+    val description: String = "",
+    val linkedIncidentId: String = "",
+    val assignedTeamId: String = "",
+    val assignedTeamCode: String = "",
+    val priority: String = "high", // "critical", "high", "moderate", "routine"
+    val status: String = "planned", // "planned", "dispatched", "in_progress", "completed", "aborted"
+    val targetLatitude: Double = 0.0,
+    val targetLongitude: Double = 0.0,
+    val createdByUid: String = "",
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null,
+)
+
+@IgnoreExtraProperties
+data class BlockedRoadMarker(
+    @DocumentId val id: String = "",
+    val orgId: String = "",
+    val reportedByUid: String = "",
+    val label: String = "",
+    val latitude: Double = 0.0,
+    val longitude: Double = 0.0,
+    val severity: String = "blocked", // "blocked", "restricted", "hazard_caution"
+    val active: Boolean = true,
+    val notes: String = "",
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null,
+)
+
+@IgnoreExtraProperties
+data class DroneTelemetry(
+    @DocumentId val id: String = "",
+    val droneId: String = "",
+    val orgId: String = "",
+    val callsign: String = "",
+    val sourceKind: String = "simulated", // "simulated" or "hardware"
+    val status: String = "idle", // "idle", "airborne", "returning", "offline"
+    val latitude: Double = 0.0,
+    val longitude: Double = 0.0,
+    val altitudeMeters: Double = 0.0,
+    val batteryPercent: Long = 100L,
+    val missionId: String = "",
+    @ServerTimestamp val updatedAt: Timestamp? = null,
 )
 
 @IgnoreExtraProperties
@@ -260,6 +354,9 @@ data class MapLayerConfig(
     val showPresenceEstimates: Boolean = true,
     val showVerifiedSurvivors: Boolean = true,
     val showBoundaryReference: Boolean = true,
+    val showBlockedRoads: Boolean = true,
+    val showMissionRoutes: Boolean = true,
+    val showDroneTelemetry: Boolean = true,
 )
 
 data class AiTriageReport(
@@ -271,6 +368,9 @@ data class AiTriageReport(
     val recommendedActions: List<String> = emptyList(),
     val requiresHumanApproval: Boolean = true,
     val safetyDisclaimer: String = "Advisory AI analysis only. Does not invent readings or confirm survivors. Human approval is mandatory before dispatching teams or altering incident status.",
+    val generatedAtMillis: Long = System.currentTimeMillis(),
+    val modelUsed: String = "gemini-3.8-flash",
+    val languageCode: String = "en",
 )
 
 enum class SurakshaSection(val route: String, val label: String) {

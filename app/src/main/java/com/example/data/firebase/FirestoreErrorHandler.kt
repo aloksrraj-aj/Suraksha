@@ -16,6 +16,14 @@ enum class OperationType(val value: String) {
     WRITE("write"),
 }
 
+fun redactPiiForLog(raw: String?): String {
+    if (raw.isNullOrBlank()) return ""
+    var sanitized = raw
+        .replace(Regex("[a-zA-Z0-9._%+\\-]+@[a-zA-Z0-9.\\-]+\\.[a-zA-Z]{2,}"), "[REDACTED_EMAIL]")
+        .replace(Regex("(\\+?\\d{1,3}[\\s-]?)?\\d{3,5}[\\s-]?\\d{4,6}"), "[REDACTED_PHONE]")
+    return sanitized.take(240)
+}
+
 fun handleFirestoreError(
     exception: Throwable,
     operationType: OperationType,
@@ -33,25 +41,21 @@ fun handleFirestoreError(
     }
     val currentUser = auth?.currentUser
 
-    val providerInfoList = currentUser?.providerData?.map { provider ->
-        JSONObject().apply {
-            put("providerId", provider.providerId)
-            put("email", provider.email)
-        }
-    } ?: emptyList()
+    // Never log raw email addresses or PII in Logcat
+    val providerIds = currentUser?.providerData?.map { it.providerId }.orEmpty()
 
     val authInfoJson = JSONObject().apply {
-        put("userId", currentUser?.uid)
-        put("email", currentUser?.email)
-        put("emailVerified", currentUser?.isEmailVerified)
-        put("tenantId", currentUser?.tenantId)
-        put("providerInfo", JSONArray(providerInfoList))
+        put("userId", currentUser?.uid?.take(12)?.plus("…") ?: "unauthenticated")
+        put("isSignedIn", currentUser != null)
+        put("emailVerified", currentUser?.isEmailVerified ?: false)
+        put("providers", JSONArray(providerIds))
     }
 
     val errorInfoJson = JSONObject().apply {
-        put("error", rootError.message ?: rootError.toString())
+        put("errorCode", (rootError as? FirebaseFirestoreException)?.code?.name ?: rootError.javaClass.simpleName)
+        put("error", redactPiiForLog(rootError.message ?: rootError.toString()))
         put("operationType", operationType.value)
-        put("path", path)
+        put("path", redactPiiForLog(path))
         put("authInfo", authInfoJson)
     }
 

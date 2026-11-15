@@ -4,11 +4,13 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.location.Location
 import android.location.LocationManager
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Looper
 import androidx.core.content.ContextCompat
+import com.example.data.local.SurakshaPreferences
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
@@ -82,6 +84,7 @@ class SurakshaLocationController(private val context: Context) {
     private val fusedClient: FusedLocationProviderClient =
         LocationServices.getFusedLocationProviderClient(appContext)
     private var inlineCallback: LocationCallback? = null
+    private var lastAcceptedLocation: Location? = null
 
     val locationState: StateFlow<LocationFixState> = SurakshaLocationBus.state
 
@@ -110,6 +113,7 @@ class SurakshaLocationController(private val context: Context) {
 
     fun startTracking(useForegroundService: Boolean = true) {
         if (!hasLocationPermission()) {
+            SurakshaPreferences.persistLocationConsentSync(appContext, false)
             SurakshaLocationBus.emit(LocationFixState.PermissionDenied())
             return
         }
@@ -118,6 +122,7 @@ class SurakshaLocationController(private val context: Context) {
             return
         }
 
+        SurakshaPreferences.persistLocationConsentSync(appContext, true)
         SurakshaLocationBus.emit(LocationFixState.Searching)
 
         if (useForegroundService) {
@@ -127,14 +132,21 @@ class SurakshaLocationController(private val context: Context) {
                 }
                 ContextCompat.startForegroundService(appContext, intent)
                 return
-            } catch (_: Exception) {
-                // Fall back to direct fused client updates if foreground start restricted
+            } catch (e: Exception) {
+                // Never silently degrade to unreliable inline tracking; report foreground restriction explicitly
+                SurakshaLocationBus.emit(
+                    LocationFixState.Unavailable(
+                        "Foreground GPS service restricted by OS (${e.javaClass.simpleName}). Keep app open or retry."
+                    )
+                )
+                return
             }
         }
         startInlineUpdates()
     }
 
     fun stopTracking() {
+        SurakshaPreferences.persistLocationConsentSync(appContext, false)
         stopInlineUpdates()
         try {
             val intent = Intent(appContext, SurakshaLocationService::class.java).apply {
@@ -161,7 +173,12 @@ class SurakshaLocationController(private val context: Context) {
         val callback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
                 val loc = result.lastLocation ?: return
-                if (!isValidCoordinate(loc.latitude, loc.longitude)) return
+                if (!SurakshaPreferences.isLocationConsentPersisted(appContext)) {
+                    stopTracking()
+                    return
+                }
+                if (!shouldAcceptFix(loc, lastAcceptedLocation)) return
+                lastAcceptedLocation = loc
                 SurakshaLocationBus.emit(
                     LocationFixState.Available(
                         latitude = loc.latitude,
@@ -185,6 +202,26 @@ class SurakshaLocationController(private val context: Context) {
     }
 
     companion object {
+        const val MAX_ACCEPTABLE_ACCURACY_METERS = 300f
+        const val MAX_FIX_AGE_MILLIS = 90_000L
+
+        fun shouldAcceptFix(
+            candidate: Location,
+            previous: Location?,
+            nowMillis: Long = System.currentTimeMillis(),
+        ): Boolean {
+            if (!isValidCoordinate(candidate.latitude, candidate.longitude)) return false
+            if (candidate.hasAccuracy() && candidate.accuracy > MAX_ACCEPTABLE_ACCURACY_METERS) return false
+            val fixTime = candidate.time.takeIf { it > 0L } ?: nowMillis
+            if ((nowMillis - fixTime) > MAX_FIX_AGE_MILLIS) return false
+            if (previous != null) {
+                val timeDelta = fixTime - previous.time
+                val movedMeters = previous.distanceTo(candidate)
+                if (timeDelta < 2_000L && movedMeters < 1.5f) return false
+            }
+            return true
+        }
+
         fun computeBatteryAwarePolicy(batteryPercent: Int): Pair<Long, Int> {
             return when {
                 batteryPercent >= 50 -> 10_000L to Priority.PRIORITY_HIGH_ACCURACY

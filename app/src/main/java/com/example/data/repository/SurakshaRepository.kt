@@ -4,11 +4,16 @@ import android.content.Context
 import com.example.R
 import com.example.data.firebase.OperationType
 import com.example.data.firebase.handleFirestoreError
+import com.example.data.model.ActivityLogEntry
+import com.example.data.model.BlockedRoadMarker
+import com.example.data.model.DroneTelemetry
+import com.example.data.model.NotificationDispatchRecord
 import com.example.data.model.OrgInvite
 import com.example.data.model.OrgMember
 import com.example.data.model.OrgRole
 import com.example.data.model.PresenceSignal
 import com.example.data.model.RescueLocation
+import com.example.data.model.RescueMission
 import com.example.data.model.RescueOrganization
 import com.example.data.model.RescueRegistryEntry
 import com.example.data.model.RescueTeam
@@ -31,6 +36,7 @@ import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
+import java.security.SecureRandom
 import java.util.Locale
 import java.util.UUID
 
@@ -119,7 +125,7 @@ class SurakshaRepository(
                     snapshot.toObjects(
                         OrgInvite::class.java,
                         DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
-                    )
+                    ).sortedByDescending { it.createdAt?.seconds ?: 0L }
                 }
                 .catch { error ->
                     logStreamError(error, OperationType.LIST, path, uid)
@@ -242,6 +248,101 @@ class SurakshaRepository(
         )
     }
 
+    fun observeNotificationDispatches(orgId: String): Flow<List<NotificationDispatchRecord>> = flow {
+        val path = "organizations/$orgId/notification_dispatches"
+        val uid = auth.currentUser?.uid ?: ""
+        emitAll(
+            orgDoc(orgId).collection("notification_dispatches")
+                .snapshots()
+                .map { snapshot ->
+                    snapshot.toObjects(
+                        NotificationDispatchRecord::class.java,
+                        DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                    ).sortedByDescending { it.createdAt?.seconds ?: 0L }
+                }
+                .catch { error ->
+                    logStreamError(error, OperationType.LIST, path, uid)
+                    throw error
+                }
+        )
+    }
+
+    fun observeActivityLogs(orgId: String): Flow<List<ActivityLogEntry>> = flow {
+        val path = "organizations/$orgId/activity_logs"
+        val uid = auth.currentUser?.uid ?: ""
+        emitAll(
+            orgDoc(orgId).collection("activity_logs")
+                .snapshots()
+                .map { snapshot ->
+                    snapshot.toObjects(
+                        ActivityLogEntry::class.java,
+                        DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                    ).sortedByDescending { it.createdAt?.seconds ?: 0L }.take(60)
+                }
+                .catch { error ->
+                    logStreamError(error, OperationType.LIST, path, uid)
+                    throw error
+                }
+        )
+    }
+
+    fun observeMissions(orgId: String): Flow<List<RescueMission>> = flow {
+        val path = "organizations/$orgId/missions"
+        val uid = auth.currentUser?.uid ?: ""
+        emitAll(
+            orgDoc(orgId).collection("missions")
+                .snapshots()
+                .map { snapshot ->
+                    snapshot.toObjects(
+                        RescueMission::class.java,
+                        DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                    ).sortedByDescending { it.updatedAt?.seconds ?: 0L }
+                }
+                .catch { error ->
+                    logStreamError(error, OperationType.LIST, path, uid)
+                    throw error
+                }
+        )
+    }
+
+    fun observeBlockedRoads(orgId: String): Flow<List<BlockedRoadMarker>> = flow {
+        val path = "organizations/$orgId/blocked_roads"
+        val uid = auth.currentUser?.uid ?: ""
+        emitAll(
+            orgDoc(orgId).collection("blocked_roads")
+                .snapshots()
+                .map { snapshot ->
+                    snapshot.toObjects(
+                        BlockedRoadMarker::class.java,
+                        DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                    ).sortedByDescending { it.updatedAt?.seconds ?: 0L }
+                }
+                .catch { error ->
+                    logStreamError(error, OperationType.LIST, path, uid)
+                    throw error
+                }
+        )
+    }
+
+    fun observeDroneTelemetry(orgId: String): Flow<List<DroneTelemetry>> = flow {
+        val path = "organizations/$orgId/drone_telemetry"
+        val uid = auth.currentUser?.uid ?: ""
+        emitAll(
+            orgDoc(orgId).collection("drone_telemetry")
+                .snapshots()
+                .map { snapshot ->
+                    snapshot.toObjects(
+                        DroneTelemetry::class.java,
+                        DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                    ).sortedByDescending { it.updatedAt?.seconds ?: 0L }
+                }
+                .catch { error ->
+                    logStreamError(error, OperationType.LIST, path, uid)
+                    throw error
+                }
+        )
+    }
+
     suspend fun ensureWorkspaceInitialized(
         displayName: String,
         callsign: String = "NDRF-CMD-01",
@@ -286,7 +387,7 @@ class SurakshaRepository(
                         "displayName" to displayName.ifBlank { "Suraksha Responder" }.take(80),
                         "callsign" to callsign.take(30),
                         "role" to OrgRole.ORG_ADMIN.value,
-                        "teamId" to "ndrf-alpha",
+                        "teamId" to "demo_team_ndrf01",
                         "availability" to "available",
                         "inviteCode" to "",
                         "createdAt" to FieldValue.serverTimestamp(),
@@ -302,7 +403,7 @@ class SurakshaRepository(
                         "displayName" to displayName.ifBlank { "Suraksha Responder" }.take(80),
                         "callsign" to callsign.take(30),
                         "activeOrgId" to targetOrgId,
-                        "teamId" to "ndrf-alpha",
+                        "teamId" to "demo_team_ndrf01",
                         "teamName" to "NDRF Alpha Response",
                         "role" to OrgRole.ORG_ADMIN.value,
                         "locationSharingEnabled" to false,
@@ -325,6 +426,32 @@ class SurakshaRepository(
             throw e
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.WRITE, userRef.path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun switchActiveOrganization(orgId: String): Result<String> {
+        val uid = requireUserId()
+        val clean = orgId.trim()
+        if (clean.isBlank()) return Result.failure(IllegalArgumentException("Organization ID required"))
+        return try {
+            val memberSnap = orgDoc(clean).collection("members").document(uid).get().await()
+            if (!memberSnap.exists()) {
+                return Result.failure(IllegalStateException("You are not a member of organization $clean."))
+            }
+            val role = memberSnap.getString("role") ?: OrgRole.OBSERVER.value
+            db.collection("users").document(uid).update(
+                mapOf(
+                    "activeOrgId" to clean,
+                    "role" to role,
+                    "updatedAt" to FieldValue.serverTimestamp(),
+                )
+            ).await()
+            Result.success(clean)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, "users/$uid")
             Result.failure(e)
         }
     }
@@ -368,10 +495,12 @@ class SurakshaRepository(
             db.collection("users").document(uid).update(
                 mapOf(
                     "activeOrgId" to orgId,
+                    "role" to OrgRole.ORG_ADMIN.value,
                     "updatedAt" to FieldValue.serverTimestamp(),
                 )
             ).await()
 
+            logOrgActivity(orgId, creatorDisplayName, "invite", "Created organization $orgName ($orgCode)", orgId)
             Result.success(orgId)
         } catch (e: CancellationException) {
             throw e
@@ -383,15 +512,20 @@ class SurakshaRepository(
 
     suspend fun createOrgInvite(
         orgId: String,
-        inviteCode: String,
+        inviteCode: String = "",
         defaultRole: String = OrgRole.OPERATOR.value,
+        expiresInHours: Long = 48L,
+        maxUses: Long = 25L,
     ): Result<String> {
         val uid = requireUserId()
-        val cleanCode = inviteCode.trim().uppercase(Locale.US).replace(Regex("[^A-Z0-9_-]"), "").take(32)
-        if (cleanCode.length < 4) {
-            return Result.failure(IllegalArgumentException("Invite code must be at least 4 alphanumeric characters."))
+        val rawCode = inviteCode.ifBlank { generateSecureInviteCode() }
+        val cleanCode = rawCode.trim().uppercase(Locale.US).replace(Regex("[^A-Z0-9_-]"), "").take(32)
+        if (cleanCode.length < 8) {
+            return Result.failure(IllegalArgumentException("Invite code must be at least 8 high-entropy characters."))
         }
         val safeRole = if (defaultRole == OrgRole.OBSERVER.value) OrgRole.OBSERVER.value else OrgRole.OPERATOR.value
+        val expiresAtMillis = System.currentTimeMillis() + expiresInHours.coerceIn(1L, 720L) * 3_600_000L
+        val safeMaxUses = maxUses.coerceIn(1L, 500L)
         val docRef = orgDoc(orgId).collection("invites").document(cleanCode)
         return try {
             docRef.set(
@@ -400,16 +534,39 @@ class SurakshaRepository(
                     "inviteCode" to cleanCode,
                     "defaultRole" to safeRole,
                     "active" to true,
+                    "expiresAtMillis" to expiresAtMillis,
+                    "maxUses" to safeMaxUses,
+                    "usedCount" to 0L,
                     "createdByUid" to uid,
                     "createdAt" to FieldValue.serverTimestamp(),
                     "updatedAt" to FieldValue.serverTimestamp(),
                 )
             ).await()
+            logOrgActivity(orgId, "Org Admin", "invite", "Generated $safeRole invite ($safeMaxUses max uses)", cleanCode)
             Result.success(cleanCode)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.CREATE, docRef.path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun revokeOrgInvite(orgId: String, inviteCode: String): Result<Unit> {
+        requireUserId()
+        val docRef = orgDoc(orgId).collection("invites").document(inviteCode)
+        return try {
+            docRef.update(
+                mapOf(
+                    "active" to false,
+                    "updatedAt" to FieldValue.serverTimestamp(),
+                )
+            ).await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
             Result.failure(e)
         }
     }
@@ -423,39 +580,64 @@ class SurakshaRepository(
         val uid = requireUserId()
         val cleanOrgId = orgId.trim()
         val cleanCode = inviteCode.trim().uppercase(Locale.US)
-        if (cleanOrgId.isBlank() || cleanCode.length < 4) {
-            return Result.failure(IllegalArgumentException("Organization ID and a valid 4+ character invite code are required."))
+        if (cleanOrgId.isBlank() || cleanCode.length < 8) {
+            return Result.failure(IllegalArgumentException("Organization ID and a valid 8+ character invite code are required."))
         }
         val inviteRef = orgDoc(cleanOrgId).collection("invites").document(cleanCode)
         val memberRef = orgDoc(cleanOrgId).collection("members").document(uid)
         return try {
-            val inviteSnap = inviteRef.get().await()
-            if (!inviteSnap.exists() || inviteSnap.getBoolean("active") != true) {
-                return Result.failure(IllegalStateException("Invite code is invalid or deactivated."))
-            }
-            val defaultRole = inviteSnap.getString("defaultRole")
-                ?.takeIf { it == OrgRole.OPERATOR.value || it == OrgRole.OBSERVER.value }
-                ?: OrgRole.OPERATOR.value
+            val assignedRole = db.runTransaction { tx ->
+                val inviteSnap = tx.get(inviteRef)
+                if (!inviteSnap.exists() || inviteSnap.getBoolean("active") != true) {
+                    throw IllegalStateException("Invite code is invalid or revoked.")
+                }
+                val expiresAt = inviteSnap.getLong("expiresAtMillis") ?: 0L
+                if (expiresAt > 0L && expiresAt <= System.currentTimeMillis()) {
+                    throw IllegalStateException("Invite code has expired.")
+                }
+                val maxUses = inviteSnap.getLong("maxUses") ?: 1L
+                val usedCount = inviteSnap.getLong("usedCount") ?: 0L
+                if (usedCount >= maxUses) {
+                    throw IllegalStateException("Invite code has reached its maximum use limit.")
+                }
+                val existingMember = tx.get(memberRef)
+                if (existingMember.exists()) {
+                    throw IllegalStateException("You are already a member of this organization.")
+                }
 
-            memberRef.set(
-                mapOf(
-                    "userId" to uid,
-                    "orgId" to cleanOrgId,
-                    "displayName" to displayName.ifBlank { "Responder" }.take(80),
-                    "callsign" to callsign.ifBlank { "OPS-01" }.take(30),
-                    "role" to defaultRole,
-                    "teamId" to "",
-                    "availability" to "available",
-                    "inviteCode" to cleanCode,
-                    "createdAt" to FieldValue.serverTimestamp(),
-                    "updatedAt" to FieldValue.serverTimestamp(),
+                val defaultRole = inviteSnap.getString("defaultRole")
+                    ?.takeIf { it == OrgRole.OPERATOR.value || it == OrgRole.OBSERVER.value }
+                    ?: OrgRole.OPERATOR.value
+
+                tx.set(
+                    memberRef,
+                    mapOf(
+                        "userId" to uid,
+                        "orgId" to cleanOrgId,
+                        "displayName" to displayName.ifBlank { "Responder" }.take(80),
+                        "callsign" to callsign.ifBlank { "OPS-01" }.take(30),
+                        "role" to defaultRole,
+                        "teamId" to "",
+                        "availability" to "available",
+                        "inviteCode" to cleanCode,
+                        "createdAt" to FieldValue.serverTimestamp(),
+                        "updatedAt" to FieldValue.serverTimestamp(),
+                    )
                 )
-            ).await()
+                tx.update(
+                    inviteRef,
+                    mapOf(
+                        "usedCount" to usedCount + 1L,
+                        "updatedAt" to FieldValue.serverTimestamp(),
+                    )
+                )
+                defaultRole
+            }.await()
 
             db.collection("users").document(uid).update(
                 mapOf(
                     "activeOrgId" to cleanOrgId,
-                    "role" to defaultRole,
+                    "role" to assignedRole,
                     "updatedAt" to FieldValue.serverTimestamp(),
                 )
             ).await()
@@ -495,6 +677,29 @@ class SurakshaRepository(
         }
     }
 
+    suspend fun updateMemberAvailability(
+        orgId: String,
+        availability: String,
+    ): Result<Unit> {
+        val uid = requireUserId()
+        val safeAvail = if (availability in setOf("available", "deployed", "standby", "offline")) availability else "available"
+        val docRef = orgDoc(orgId).collection("members").document(uid)
+        return try {
+            docRef.update(
+                mapOf(
+                    "availability" to safeAvail,
+                    "updatedAt" to FieldValue.serverTimestamp(),
+                )
+            ).await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+            Result.failure(e)
+        }
+    }
+
     suspend fun updateLocationSharingPreference(enabled: Boolean): Result<Unit> {
         val uid = requireUserId()
         val docRef = db.collection("users").document(uid)
@@ -525,6 +730,7 @@ class SurakshaRepository(
         val docRef = orgDoc(orgId).collection("teams").document(docId)
         val hasValid = team.locationSharingOptIn &&
             team.hasValidLocation &&
+            team.locationTimestampMillis > 0L &&
             team.latitude in -90.0..90.0 &&
             team.longitude in -180.0..180.0
         val payload = mapOf(
@@ -541,7 +747,7 @@ class SurakshaRepository(
             "latitude" to if (hasValid) team.latitude.coerceIn(-90.0, 90.0) else 0.0,
             "longitude" to if (hasValid) team.longitude.coerceIn(-180.0, 180.0) else 0.0,
             "accuracyMeters" to if (hasValid) team.accuracyMeters.coerceIn(0.0, 50_000.0) else 0.0,
-            "locationTimestampMillis" to if (hasValid) team.locationTimestampMillis.coerceAtLeast(0L) else 0L,
+            "locationTimestampMillis" to if (hasValid) team.locationTimestampMillis.coerceAtLeast(1L) else 0L,
             "locationUnavailableReason" to if (hasValid) "" else team.locationUnavailableReason.ifBlank { "Location sharing disabled" }.take(120),
             "batteryPercent" to team.batteryPercent.coerceIn(0L, 100L),
             "connectionStatus" to normalizeConnectionStatus(team.connectionStatus),
@@ -551,6 +757,7 @@ class SurakshaRepository(
         )
         return try {
             docRef.set(payload).await()
+            logOrgActivity(orgId, team.teamCode, "team", "Registered team ${team.teamCode} (${team.teamName})", docId)
             Result.success(docId)
         } catch (e: CancellationException) {
             throw e
@@ -575,7 +782,7 @@ class SurakshaRepository(
     ): Result<Unit> {
         requireUserId()
         val docRef = orgDoc(orgId).collection("teams").document(teamId)
-        val valid = optIn && hasValidLocation && latitude in -90.0..90.0 && longitude in -180.0..180.0
+        val valid = optIn && hasValidLocation && timestampMillis > 0L && latitude in -90.0..90.0 && longitude in -180.0..180.0
         return try {
             docRef.update(
                 mapOf(
@@ -584,7 +791,7 @@ class SurakshaRepository(
                     "latitude" to if (valid) latitude else 0.0,
                     "longitude" to if (valid) longitude else 0.0,
                     "accuracyMeters" to if (valid) accuracyMeters.coerceIn(0.0, 50_000.0) else 0.0,
-                    "locationTimestampMillis" to if (valid) timestampMillis.coerceAtLeast(0L) else 0L,
+                    "locationTimestampMillis" to if (valid) timestampMillis.coerceAtLeast(1L) else 0L,
                     "locationUnavailableReason" to if (valid) "" else unavailableReason.take(120),
                     "batteryPercent" to batteryPercent.coerceIn(0L, 100L),
                     "connectionStatus" to normalizeConnectionStatus(connectionStatus),
@@ -641,6 +848,7 @@ class SurakshaRepository(
         )
         return try {
             docRef.set(payload).await()
+            logOrgActivity(orgId, "Responder", "location", "Logged disaster site ${location.name} (${location.severity})", docId)
             Result.success(docId)
         } catch (e: CancellationException) {
             throw e
@@ -675,7 +883,6 @@ class SurakshaRepository(
         val docRef = orgDoc(orgId).collection("presence_signals").document(docId)
         val minCount = signal.estimatedMinCount.coerceIn(0L, 500L)
         val maxCount = signal.estimatedMaxCount.coerceIn(minCount, 500L)
-        // Strict rule alignment: never create as field_verified directly
         val safeInitialStatus = if (signal.verificationStatus == "unverified") "unverified" else "estimated"
         val obsTs = signal.observationTimestampMillis.takeIf { it > 0L } ?: System.currentTimeMillis()
         val payload = mapOf(
@@ -743,6 +950,7 @@ class SurakshaRepository(
                     "updatedAt" to FieldValue.serverTimestamp(),
                 )
             ).await()
+            logOrgActivity(orgId, "Responder", "presence", "Signal ${signal.sectorLabel} marked $newStatus", signal.id)
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
@@ -780,12 +988,17 @@ class SurakshaRepository(
             "verifierUid" to if (entry.verificationStatus == "verified") uid else entry.verifierUid.take(128),
             "verificationNotes" to entry.verificationNotes.trim().take(300),
             "duplicateOfId" to entry.duplicateOfId.take(128),
+            "medicalCategory" to entry.medicalCategory.take(64),
+            "medicalUrgency" to entry.medicalUrgency.ifBlank { "routine" }.take(32),
+            "assignedMedicalTeam" to entry.assignedMedicalTeam.take(64),
+            "linkedIncidentId" to entry.linkedIncidentId.take(128),
             "isSynthetic" to entry.isSynthetic,
             "createdAt" to FieldValue.serverTimestamp(),
             "updatedAt" to FieldValue.serverTimestamp(),
         )
         return try {
             docRef.set(payload).await()
+            logOrgActivity(orgId, "Registry Desk", "registry", "Logged ${entry.category}: ${entry.title}", docId)
             Result.success(docId)
         } catch (e: CancellationException) {
             throw e
@@ -821,9 +1034,14 @@ class SurakshaRepository(
                     "verifierUid" to if (entry.verificationStatus == "verified") uid else entry.verifierUid,
                     "verificationNotes" to entry.verificationNotes.trim().take(300),
                     "duplicateOfId" to entry.duplicateOfId.take(128),
+                    "medicalCategory" to entry.medicalCategory.take(64),
+                    "medicalUrgency" to entry.medicalUrgency.ifBlank { "routine" }.take(32),
+                    "assignedMedicalTeam" to entry.assignedMedicalTeam.take(64),
+                    "linkedIncidentId" to entry.linkedIncidentId.take(128),
                     "updatedAt" to FieldValue.serverTimestamp(),
                 )
             ).await()
+            logOrgActivity(orgId, "Registry Desk", "registry", "Updated ${entry.title} -> ${entry.rescueStatus}/${entry.verificationStatus}", entry.id)
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
@@ -862,7 +1080,9 @@ class SurakshaRepository(
             "assignedTeamCode" to "",
             "acknowledgedByUid" to "",
             "acknowledgedAtMillis" to 0L,
-            "deliveryNote" to "Saved to Firestore dispatch; FCM push requires trusted backend trigger.",
+            "deliveryNote" to "Saved to Firestore; awaiting Cloud Function FCM dispatch.",
+            "notificationStatus" to "pending_push",
+            "pushAttemptedCount" to 0L,
             "isSynthetic" to incident.isSynthetic,
             "createdAt" to FieldValue.serverTimestamp(),
             "updatedAt" to FieldValue.serverTimestamp(),
@@ -876,10 +1096,11 @@ class SurakshaRepository(
                     "actorUid" to uid,
                     "fromStatus" to SosIncidentStatus.CREATED.value,
                     "toStatus" to SosIncidentStatus.DELIVERED.value,
-                    "note" to "Incident logged to Cloud Firestore dispatch channel",
+                    "note" to "Incident logged to Cloud Firestore; backend FCM trigger queued",
                     "createdAt" to FieldValue.serverTimestamp(),
                 )
             ).await()
+            logOrgActivity(orgId, incident.senderName.ifBlank { "Responder" }, "sos", "Raised ${incident.priority.uppercase(Locale.US)} SOS (${incident.teamCode})", incidentId)
             Result.success(incidentId)
         } catch (e: CancellationException) {
             throw e
@@ -927,12 +1148,149 @@ class SurakshaRepository(
                     "createdAt" to FieldValue.serverTimestamp(),
                 )
             ).await()
+            logOrgActivity(orgId, "Command", "sos", "SOS ${incident.incidentId} -> ${targetStatus.label}", incident.incidentId)
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.UPDATE, docRef.path)
             Result.failure(e)
+        }
+    }
+
+    suspend fun createMission(orgId: String, mission: RescueMission): Result<String> {
+        val uid = requireUserId()
+        val missionId = mission.missionId.ifBlank {
+            "msn_${UUID.randomUUID().toString().replace("-", "").take(12)}"
+        }
+        val docRef = orgDoc(orgId).collection("missions").document(missionId)
+        return try {
+            docRef.set(
+                mapOf(
+                    "missionId" to missionId,
+                    "orgId" to orgId,
+                    "title" to mission.title.trim().take(120),
+                    "description" to mission.description.trim().take(300),
+                    "linkedIncidentId" to mission.linkedIncidentId.take(128),
+                    "assignedTeamId" to mission.assignedTeamId.take(128),
+                    "assignedTeamCode" to mission.assignedTeamCode.take(32),
+                    "priority" to mission.priority,
+                    "status" to mission.status,
+                    "targetLatitude" to mission.targetLatitude.coerceIn(-90.0, 90.0),
+                    "targetLongitude" to mission.targetLongitude.coerceIn(-180.0, 180.0),
+                    "createdByUid" to uid,
+                    "createdAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp(),
+                )
+            ).await()
+            logOrgActivity(orgId, "Command", "mission", "Dispatched mission ${mission.title} -> ${mission.assignedTeamCode}", missionId)
+            Result.success(missionId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.CREATE, docRef.path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun updateMissionStatus(orgId: String, missionId: String, status: String): Result<Unit> {
+        requireUserId()
+        val docRef = orgDoc(orgId).collection("missions").document(missionId)
+        return try {
+            docRef.update(
+                mapOf(
+                    "status" to status,
+                    "updatedAt" to FieldValue.serverTimestamp(),
+                )
+            ).await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun createBlockedRoad(orgId: String, marker: BlockedRoadMarker): Result<String> {
+        val uid = requireUserId()
+        val docId = "road_${UUID.randomUUID().toString().replace("-", "").take(12)}"
+        val docRef = orgDoc(orgId).collection("blocked_roads").document(docId)
+        return try {
+            docRef.set(
+                mapOf(
+                    "orgId" to orgId,
+                    "reportedByUid" to uid,
+                    "label" to marker.label.trim().take(120),
+                    "latitude" to marker.latitude.coerceIn(-90.0, 90.0),
+                    "longitude" to marker.longitude.coerceIn(-180.0, 180.0),
+                    "severity" to marker.severity,
+                    "active" to marker.active,
+                    "notes" to marker.notes.trim().take(240),
+                    "createdAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp(),
+                )
+            ).await()
+            logOrgActivity(orgId, "GIS Scout", "location", "Flagged road obstacle: ${marker.label}", docId)
+            Result.success(docId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.CREATE, docRef.path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun upsertDroneTelemetry(orgId: String, drone: DroneTelemetry): Result<Unit> {
+        requireUserId()
+        val droneId = drone.droneId.ifBlank { "uav_${UUID.randomUUID().toString().replace("-", "").take(8)}" }
+        val docRef = orgDoc(orgId).collection("drone_telemetry").document(droneId)
+        return try {
+            docRef.set(
+                mapOf(
+                    "droneId" to droneId,
+                    "orgId" to orgId,
+                    "callsign" to drone.callsign.trim().take(32),
+                    "sourceKind" to drone.sourceKind,
+                    "status" to drone.status,
+                    "latitude" to drone.latitude.coerceIn(-90.0, 90.0),
+                    "longitude" to drone.longitude.coerceIn(-180.0, 180.0),
+                    "altitudeMeters" to drone.altitudeMeters.coerceIn(0.0, 10000.0),
+                    "batteryPercent" to drone.batteryPercent.coerceIn(0L, 100L),
+                    "missionId" to drone.missionId.take(128),
+                    "updatedAt" to FieldValue.serverTimestamp(),
+                )
+            ).await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.WRITE, docRef.path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun logOrgActivity(
+        orgId: String,
+        actorName: String,
+        category: String,
+        summary: String,
+        targetId: String = "",
+    ) {
+        val uid = auth.currentUser?.uid ?: return
+        runCatching {
+            val logId = "act_${UUID.randomUUID().toString().replace("-", "").take(12)}"
+            orgDoc(orgId).collection("activity_logs").document(logId).set(
+                mapOf(
+                    "orgId" to orgId,
+                    "actorUid" to uid,
+                    "actorName" to actorName.ifBlank { "Responder" }.take(60),
+                    "category" to category,
+                    "summary" to summary.take(240),
+                    "targetId" to targetId.take(128),
+                    "createdAt" to FieldValue.serverTimestamp(),
+                )
+            ).await()
         }
     }
 
@@ -1031,37 +1389,18 @@ class SurakshaRepository(
                 RescueLocation(
                     orgId = orgId,
                     userId = uid,
-                    name = "Majuli Riverbank Flood Ward 3",
-                    region = "Jorhat, Assam",
+                    name = "Brahmaputra Floodplain Embankment",
+                    region = "Majuli, Assam",
                     hazardType = "flood",
                     severity = "high",
                     latitude = 26.9544,
                     longitude = 94.1678,
-                    radiusMeters = 1200.0,
+                    radiusMeters = 1500.0,
                     verificationStatus = "verified",
-                    dataSource = "Synthetic Flood Gauge (Demo)",
+                    dataSource = "Synthetic River Gauge (Demo)",
                     isSynthetic = true,
                 ),
                 explicitId = "demo_loc_majuli",
-            ).getOrThrow()
-
-            createRescueLocation(
-                orgId,
-                RescueLocation(
-                    orgId = orgId,
-                    userId = uid,
-                    name = "Leh-Khardung High Altitude Shelter",
-                    region = "Leh, Ladakh",
-                    hazardType = "earthquake",
-                    severity = "moderate",
-                    latitude = 34.1526,
-                    longitude = 77.5771,
-                    radiusMeters = 600.0,
-                    verificationStatus = "unverified",
-                    dataSource = "Synthetic Relay Ping (Demo)",
-                    isSynthetic = true,
-                ),
-                explicitId = "demo_loc_leh",
             ).getOrThrow()
 
             createRescueTeam(
@@ -1071,15 +1410,15 @@ class SurakshaRepository(
                     userId = uid,
                     leaderUid = uid,
                     teamCode = "NDRF-01",
-                    teamName = "Himalayan Search & Rescue Alpha",
+                    teamName = "Himalaya Urban SAR Alpha",
                     memberCount = 12L,
                     activeCount = 10L,
                     status = "deployed",
                     locationSharingOptIn = true,
                     hasValidLocation = true,
-                    latitude = 30.5512,
-                    longitude = 79.5675,
-                    accuracyMeters = 8.5,
+                    latitude = 30.5530,
+                    longitude = 79.5695,
+                    accuracyMeters = 8.0,
                     locationTimestampMillis = System.currentTimeMillis(),
                     locationUnavailableReason = "",
                     batteryPercent = 84L,
@@ -1252,6 +1591,10 @@ class SurakshaRepository(
                     verificationStatus = "verified",
                     informationSource = "Sector Triage Lead",
                     verificationNotes = "Dispatched via ambulance convoy.",
+                    medicalCategory = "trauma",
+                    medicalUrgency = "critical",
+                    assignedMedicalTeam = "MED-02",
+                    linkedIncidentId = "demo_sos_01",
                     isSynthetic = true,
                 ),
                 explicitId = "demo_reg_medical",
@@ -1273,6 +1616,54 @@ class SurakshaRepository(
                     isSynthetic = true,
                 ),
                 explicitId = "demo_sos_01",
+            ).getOrThrow()
+
+            createMission(
+                orgId,
+                RescueMission(
+                    missionId = "demo_msn_joshimath",
+                    orgId = orgId,
+                    title = "Stabilize Joshimath Culvert Corridor",
+                    description = "Synthetic Demo Mission: Clear debris along Marker 6 footpath for stretcher egress.",
+                    linkedIncidentId = "demo_sos_01",
+                    assignedTeamId = "demo_team_ndrf01",
+                    assignedTeamCode = "NDRF-01",
+                    priority = "high",
+                    status = "in_progress",
+                    targetLatitude = 30.5506,
+                    targetLongitude = 79.5660,
+                    createdByUid = uid,
+                )
+            ).getOrThrow()
+
+            createBlockedRoad(
+                orgId,
+                BlockedRoadMarker(
+                    orgId = orgId,
+                    reportedByUid = uid,
+                    label = "NH-7 Ridge Washout (Demo)",
+                    latitude = 30.5518,
+                    longitude = 79.5681,
+                    severity = "blocked",
+                    active = true,
+                    notes = "Synthetic demo obstruction marker — use alternate spur route.",
+                )
+            ).getOrThrow()
+
+            upsertDroneTelemetry(
+                orgId,
+                DroneTelemetry(
+                    droneId = "demo_uav_garuda1",
+                    orgId = orgId,
+                    callsign = "GARUDA-UAV-1",
+                    sourceKind = "simulated",
+                    status = "airborne",
+                    latitude = 30.5514,
+                    longitude = 79.5668,
+                    altitudeMeters = 68.0,
+                    batteryPercent = 76L,
+                    missionId = "demo_msn_joshimath",
+                )
             ).getOrThrow()
 
             Result.success(Unit)
@@ -1302,6 +1693,17 @@ class SurakshaRepository(
         val exceptionToLog = firestoreError ?: (error as? Exception)
         if (exceptionToLog != null && auth.currentUser?.uid == expectedUid) {
             handleFirestoreError(exceptionToLog, operationType, path)
+        }
+    }
+
+    companion object {
+        private val INVITE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789".toCharArray()
+        private val secureRandom = SecureRandom()
+
+        fun generateSecureInviteCode(prefix: String = "SRK"): String {
+            val part1 = (1..4).map { INVITE_ALPHABET[secureRandom.nextInt(INVITE_ALPHABET.size)] }.joinToString("")
+            val part2 = (1..4).map { INVITE_ALPHABET[secureRandom.nextInt(INVITE_ALPHABET.size)] }.joinToString("")
+            return "${prefix.uppercase(Locale.US)}-$part1-$part2"
         }
     }
 }

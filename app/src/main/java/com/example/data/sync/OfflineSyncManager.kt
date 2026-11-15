@@ -1,8 +1,10 @@
 package com.example.data.sync
 
+import android.content.Context
 import android.util.Log
 import com.example.data.local.PendingSyncOperationEntity
 import com.example.data.local.SurakshaLocalDao
+import com.example.data.local.SyncHistoryEntity
 import com.example.data.model.SyncStatus
 import com.example.data.network.NetworkMonitor
 import com.example.data.network.NetworkState
@@ -12,7 +14,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.util.UUID
@@ -30,8 +31,10 @@ class OfflineSyncManager(
     private val dao: SurakshaLocalDao,
     private val networkMonitor: NetworkMonitor,
     private val scope: CoroutineScope,
+    private val appContext: Context? = null,
 ) {
     val pendingOperations: Flow<List<PendingSyncOperationEntity>> = dao.observePendingSyncOperations()
+    val syncHistory: Flow<List<SyncHistoryEntity>> = dao.observeSyncHistory()
 
     private val _isSyncing = MutableStateFlow(false)
     val isSyncing: StateFlow<Boolean> = _isSyncing.asStateFlow()
@@ -72,12 +75,30 @@ class OfflineSyncManager(
                 lastError = lastError,
                 createdAtMillis = now,
                 updatedAtMillis = now,
+                idempotencyKey = "${orgId}_${entityType}_$operationId",
+                nextRetryAtMillis = 0L,
+                conflictNote = "",
             )
         )
+        appContext?.let { SurakshaSyncWorker.schedule(it) }
         return operationId
     }
 
-    suspend fun flushPendingQueue(): Pair<Int, Int> {
+    suspend fun retryOperationNow(operationId: String) {
+        val existing = dao.getPendingOperationById(operationId) ?: return
+        dao.upsertPendingSyncOperation(
+            existing.copy(
+                syncStatus = SyncStatus.PENDING_SYNC.value,
+                retryCount = 0,
+                nextRetryAtMillis = 0L,
+                lastError = "Manual retry requested",
+                updatedAtMillis = System.currentTimeMillis(),
+            )
+        )
+        flushPendingQueue(forceIgnoreBackoff = true)
+    }
+
+    suspend fun flushPendingQueue(forceIgnoreBackoff: Boolean = false): Pair<Int, Int> {
         val exec = executor ?: return 0 to 0
         if (!_isSyncing.compareAndSet(expect = false, update = true)) return 0 to 0
         var syncedCount = 0
@@ -86,7 +107,8 @@ class OfflineSyncManager(
             if (networkMonitor.refreshNow() == NetworkState.OFFLINE) {
                 return 0 to 0
             }
-            val pending = dao.getRetryableOperations()
+            val now = System.currentTimeMillis()
+            val pending = dao.getRetryableOperations(if (forceIgnoreBackoff) Long.MAX_VALUE else now)
             for (op in pending) {
                 val res = try {
                     exec.executeOperation(op)
@@ -98,16 +120,44 @@ class OfflineSyncManager(
 
                 if (res.isSuccess) {
                     dao.deletePendingSyncOperation(op.operationId)
+                    dao.insertSyncHistory(
+                        SyncHistoryEntity(
+                            operationId = op.operationId,
+                            orgId = op.orgId,
+                            entityType = op.entityType,
+                            outcome = "synced",
+                            detail = "Delivered to Firestore (${op.idempotencyKey.ifBlank { op.operationId }})",
+                            syncedAtMillis = System.currentTimeMillis(),
+                        )
+                    )
                     syncedCount++
                 } else {
                     val errorMsg = res.exceptionOrNull()?.localizedMessage ?: "Sync rejected by server"
-                    Log.w(TAG, "Sync failed for ${op.operationId}: $errorMsg")
+                    val nextRetries = op.retryCount + 1
+                    val isDeadLetter = nextRetries >= MAX_RETRIES
+                    val status = if (isDeadLetter) SyncStatus.DEAD_LETTER.value else SyncStatus.FAILED.value
+                    val nextRetryAt = System.currentTimeMillis() + computeBackoffMillis(nextRetries)
+                    Log.w(TAG, "Sync failed for ${op.operationId} (attempt $nextRetries/$MAX_RETRIES): $errorMsg")
                     dao.upsertPendingSyncOperation(
                         op.copy(
-                            syncStatus = SyncStatus.FAILED.value,
-                            retryCount = op.retryCount + 1,
+                            syncStatus = status,
+                            retryCount = nextRetries,
+                            nextRetryAtMillis = nextRetryAt,
                             lastError = errorMsg.take(240),
+                            conflictNote = if (errorMsg.contains("PERMISSION_DENIED", ignoreCase = true)) {
+                                "Server rejected write (check org role or stale state); inspect before retry."
+                            } else op.conflictNote,
                             updatedAtMillis = System.currentTimeMillis(),
+                        )
+                    )
+                    dao.insertSyncHistory(
+                        SyncHistoryEntity(
+                            operationId = op.operationId,
+                            orgId = op.orgId,
+                            entityType = op.entityType,
+                            outcome = if (isDeadLetter) "dead_letter" else "failed",
+                            detail = errorMsg.take(200),
+                            syncedAtMillis = System.currentTimeMillis(),
                         )
                     )
                     failedCount++
@@ -124,5 +174,11 @@ class OfflineSyncManager(
 
     companion object {
         private const val TAG = "OfflineSyncManager"
+        const val MAX_RETRIES = 5
+
+        fun computeBackoffMillis(retryCount: Int): Long {
+            val shift = retryCount.coerceIn(0, 6)
+            return 5_000L * (1L shl shift) // 5s, 10s, 20s, 40s, 80s...
+        }
     }
 }

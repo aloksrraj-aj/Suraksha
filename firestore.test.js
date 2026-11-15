@@ -11,6 +11,7 @@ const PROJECT_ID = process.env.GCP_PROJECT || "demo-no-project";
 const ADMIN_UID = "admin_100";
 const LEADER_UID = "leader_200";
 const OPERATOR_UID = "operator_300";
+const MEDIC_UID = "medic_350";
 const OBSERVER_UID = "observer_400";
 const OUTSIDER_UID = "outsider_999";
 const ORG_ID = "org_ndrf_north";
@@ -23,6 +24,7 @@ async function seedOrgWithMembers() {
   await testEnv.withSecurityRulesDisabled(async (ctx) => {
     const db = ctx.firestore();
     const now = new Date();
+    const futureExpiry = Date.now() + 24 * 3600 * 1000;
     await db.collection("organizations").doc(ORG_ID).set({
       orgCode: "NDRF-N",
       orgName: "NDRF North Command",
@@ -31,31 +33,59 @@ async function seedOrgWithMembers() {
       createdAt: now,
       updatedAt: now,
     });
-    await db.collection("organizations").doc(ORG_ID).collection("invites").doc("JOIN2026").set({
+    await db.collection("organizations").doc(ORG_ID).collection("invites").doc("JOIN2026XK").set({
       orgId: ORG_ID,
-      inviteCode: "JOIN2026",
+      inviteCode: "JOIN2026XK",
       defaultRole: "operator",
       active: true,
+      expiresAtMillis: futureExpiry,
+      maxUses: 5,
+      usedCount: 0,
+      createdByUid: ADMIN_UID,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.collection("organizations").doc(ORG_ID).collection("invites").doc("EXPIRED99").set({
+      orgId: ORG_ID,
+      inviteCode: "EXPIRED99",
+      defaultRole: "operator",
+      active: true,
+      expiresAtMillis: Date.now() - 60000,
+      maxUses: 5,
+      usedCount: 0,
+      createdByUid: ADMIN_UID,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.collection("organizations").doc(ORG_ID).collection("invites").doc("MAXEDOUT1").set({
+      orgId: ORG_ID,
+      inviteCode: "MAXEDOUT1",
+      defaultRole: "operator",
+      active: true,
+      expiresAtMillis: futureExpiry,
+      maxUses: 1,
+      usedCount: 1,
       createdByUid: ADMIN_UID,
       createdAt: now,
       updatedAt: now,
     });
     const members = [
-      [ADMIN_UID, "org_admin", "Cmdr. Admin", "ADM-01"],
-      [LEADER_UID, "team_leader", "Lead Officer", "LDR-02"],
-      [OPERATOR_UID, "operator", "Field Scout", "OPS-03"],
-      [OBSERVER_UID, "observer", "Observer", "OBS-04"],
+      [ADMIN_UID, "org_admin", "Cmdr. Admin", "ADM-01", "team_alpha"],
+      [LEADER_UID, "team_leader", "Lead Officer", "LDR-02", "team_alpha"],
+      [OPERATOR_UID, "operator", "Field Scout", "OPS-03", "team_alpha"],
+      [MEDIC_UID, "medic", "Field Medic", "MED-05", "team_bravo"],
+      [OBSERVER_UID, "observer", "Observer", "OBS-04", "team_alpha"],
     ];
-    for (const [uid, role, name, callsign] of members) {
+    for (const [uid, role, name, callsign, teamId] of members) {
       await db.collection("organizations").doc(ORG_ID).collection("members").doc(uid).set({
         userId: uid,
         orgId: ORG_ID,
         displayName: name,
         callsign,
         role,
-        teamId: "team_alpha",
+        teamId,
         availability: "available",
-        inviteCode: "JOIN2026",
+        inviteCode: "JOIN2026XK",
         createdAt: now,
         updatedAt: now,
       });
@@ -110,6 +140,8 @@ test("1. Unauthenticated users are denied across all org collections", async () 
   await assertFails(unauthDb.collection("organizations").doc(ORG_ID).collection("teams").get());
   await assertFails(unauthDb.collection("organizations").doc(ORG_ID).collection("sos_incidents").get());
   await assertFails(unauthDb.collection("organizations").doc(ORG_ID).collection("registry").get());
+  await assertFails(unauthDb.collection("organizations").doc(ORG_ID).collection("missions").get());
+  await assertFails(unauthDb.collection("organizations").doc(ORG_ID).collection("activity_logs").get());
 });
 
 test("2. Authorized org members can read org data; outsiders are rejected (cross-org isolation)", async () => {
@@ -119,10 +151,12 @@ test("2. Authorized org members can read org data; outsiders are rejected (cross
 
   await assertSucceeds(operatorDb.collection("organizations").doc(ORG_ID).get());
   await assertSucceeds(operatorDb.collection("organizations").doc(ORG_ID).collection("teams").get());
+  await assertSucceeds(operatorDb.collection("organizations").doc(ORG_ID).collection("missions").get());
 
   await assertFails(outsiderDb.collection("organizations").doc(ORG_ID).get());
   await assertFails(outsiderDb.collection("organizations").doc(ORG_ID).collection("teams").get());
   await assertFails(outsiderDb.collection("organizations").doc(ORG_ID).collection("sos_incidents").get());
+  await assertFails(outsiderDb.collection("organizations").doc(ORG_ID).collection("missions").get());
 });
 
 test("3. Users cannot self-escalate privileges or join org as org_admin via invite", async () => {
@@ -142,15 +176,17 @@ test("3. Users cannot self-escalate privileges or join org as org_admin via invi
       role: "org_admin",
       teamId: "team_alpha",
       availability: "available",
-      inviteCode: "JOIN2026",
+      inviteCode: "JOIN2026XK",
       createdAt: now,
       updatedAt: now,
     })
   );
 
-  // Outsider joining as operator with valid invite -> SUCCEEDS
-  await assertSucceeds(
-    outsiderDb.collection("organizations").doc(ORG_ID).collection("members").doc(OUTSIDER_UID).set({
+  // Outsider joining as operator with valid invite & atomic usedCount batch -> SUCCEEDS
+  const joinBatch = outsiderDb.batch();
+  joinBatch.set(
+    outsiderDb.collection("organizations").doc(ORG_ID).collection("members").doc(OUTSIDER_UID),
+    {
       userId: OUTSIDER_UID,
       orgId: ORG_ID,
       displayName: "Joined Operator",
@@ -158,11 +194,19 @@ test("3. Users cannot self-escalate privileges or join org as org_admin via invi
       role: "operator",
       teamId: "team_alpha",
       availability: "available",
-      inviteCode: "JOIN2026",
+      inviteCode: "JOIN2026XK",
       createdAt: now,
       updatedAt: now,
-    })
+    }
   );
+  joinBatch.update(
+    outsiderDb.collection("organizations").doc(ORG_ID).collection("invites").doc("JOIN2026XK"),
+    {
+      usedCount: 1,
+      updatedAt: now,
+    }
+  );
+  await assertSucceeds(joinBatch.commit());
 
   // Operator trying to promote themselves to org_admin -> MUST FAIL
   await assertFails(
@@ -181,13 +225,72 @@ test("3. Users cannot self-escalate privileges or join org as org_admin via invi
   );
 });
 
-test("4. Team leaders & admins can create teams; observers cannot write", async () => {
+test("4. Weak, expired, and exhausted invite codes are rejected", async () => {
   await seedOrgWithMembers();
-  const leaderDb = testEnv.authenticatedContext(LEADER_UID).firestore();
-  const observerDb = testEnv.authenticatedContext(OBSERVER_UID).firestore();
+  const adminDb = testEnv.authenticatedContext(ADMIN_UID).firestore();
+  const outsiderDb = testEnv.authenticatedContext(OUTSIDER_UID).firestore();
   const now = new Date();
 
-  const teamPayload = {
+  // Admin creating short <8 char invite -> MUST FAIL
+  await assertFails(
+    adminDb.collection("organizations").doc(ORG_ID).collection("invites").doc("BAD1").set({
+      orgId: ORG_ID,
+      inviteCode: "BAD1",
+      defaultRole: "operator",
+      active: true,
+      expiresAtMillis: Date.now() + 3600000,
+      maxUses: 10,
+      usedCount: 0,
+      createdByUid: ADMIN_UID,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Joining via expired invite -> MUST FAIL
+  await assertFails(
+    outsiderDb.collection("organizations").doc(ORG_ID).collection("members").doc(OUTSIDER_UID).set({
+      userId: OUTSIDER_UID,
+      orgId: ORG_ID,
+      displayName: "Late Joiner",
+      callsign: "LAT-01",
+      role: "operator",
+      teamId: "",
+      availability: "available",
+      inviteCode: "EXPIRED99",
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Joining via exhausted invite (usedCount == maxUses) -> MUST FAIL
+  await assertFails(
+    outsiderDb.collection("organizations").doc(ORG_ID).collection("members").doc(OUTSIDER_UID).set({
+      userId: OUTSIDER_UID,
+      orgId: ORG_ID,
+      displayName: "Maxed Joiner",
+      callsign: "MAX-01",
+      role: "operator",
+      teamId: "",
+      availability: "available",
+      inviteCode: "MAXEDOUT1",
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+});
+
+test("5. Team location RBAC restricts updates to assigned/owned team and enforces monotonic timestamps", async () => {
+  await seedOrgWithMembers();
+  const leaderDb = testEnv.authenticatedContext(LEADER_UID).firestore();
+  const operatorDb = testEnv.authenticatedContext(OPERATOR_UID).firestore();
+  const medicDb = testEnv.authenticatedContext(MEDIC_UID).firestore();
+  const observerDb = testEnv.authenticatedContext(OBSERVER_UID).firestore();
+  const now = new Date();
+  const t1 = Date.now() - 5000;
+  const t2 = Date.now();
+
+  const teamBase = {
     orgId: ORG_ID,
     userId: LEADER_UID,
     leaderUid: LEADER_UID,
@@ -196,13 +299,13 @@ test("4. Team leaders & admins can create teams; observers cannot write", async 
     memberCount: 10,
     activeCount: 8,
     status: "deployed",
-    locationSharingOptIn: false,
-    hasValidLocation: false,
-    latitude: 0,
-    longitude: 0,
-    accuracyMeters: 0,
-    locationTimestampMillis: 0,
-    locationUnavailableReason: "Sharing disabled",
+    locationSharingOptIn: true,
+    hasValidLocation: true,
+    latitude: 30.55,
+    longitude: 79.56,
+    accuracyMeters: 10,
+    locationTimestampMillis: t1,
+    locationUnavailableReason: "",
     batteryPercent: 90,
     connectionStatus: "online",
     isSynthetic: false,
@@ -210,18 +313,61 @@ test("4. Team leaders & admins can create teams; observers cannot write", async 
     updatedAt: now,
   };
 
-  await assertSucceeds(
-    leaderDb.collection("organizations").doc(ORG_ID).collection("teams").doc("team_a1").set(teamPayload)
-  );
+  await assertSucceeds(leaderDb.collection("organizations").doc(ORG_ID).collection("teams").doc("team_alpha").set(teamBase));
+  await assertSucceeds(leaderDb.collection("organizations").doc(ORG_ID).collection("teams").doc("team_bravo").set({
+    ...teamBase,
+    teamCode: "NDRF-B2",
+    teamName: "Bravo Med",
+  }));
+
+  // Observer cannot create teams
   await assertFails(
     observerDb.collection("organizations").doc(ORG_ID).collection("teams").doc("team_obs").set({
-      ...teamPayload,
+      ...teamBase,
       userId: OBSERVER_UID,
+    })
+  );
+
+  // Operator assigned to team_alpha CAN update team_alpha location with newer timestamp
+  await assertSucceeds(
+    operatorDb.collection("organizations").doc(ORG_ID).collection("teams").doc("team_alpha").update({
+      latitude: 30.56,
+      longitude: 79.57,
+      locationTimestampMillis: t2,
+      updatedAt: now,
+    })
+  );
+
+  // Operator assigned to team_alpha CANNOT spoof location of team_bravo!
+  await assertFails(
+    operatorDb.collection("organizations").doc(ORG_ID).collection("teams").doc("team_bravo").update({
+      latitude: 12.0,
+      longitude: 77.0,
+      locationTimestampMillis: t2,
+      updatedAt: now,
+    })
+  );
+
+  // Medic assigned to team_bravo CAN update team_bravo location, unless timestamp regresses (< t1)
+  await assertFails(
+    medicDb.collection("organizations").doc(ORG_ID).collection("teams").doc("team_bravo").update({
+      latitude: 30.58,
+      longitude: 79.59,
+      locationTimestampMillis: t1 - 2000, // regressive timestamp -> MUST FAIL
+      updatedAt: now,
+    })
+  );
+  await assertSucceeds(
+    medicDb.collection("organizations").doc(ORG_ID).collection("teams").doc("team_bravo").update({
+      latitude: 30.58,
+      longitude: 79.59,
+      locationTimestampMillis: t2,
+      updatedAt: now,
     })
   );
 });
 
-test("5. Invalid coordinates and future timestamps are rejected", async () => {
+test("6. Invalid coordinates and future timestamps are rejected", async () => {
   await seedOrgWithMembers();
   const operatorDb = testEnv.authenticatedContext(OPERATOR_UID).firestore();
   const now = new Date();
@@ -235,7 +381,7 @@ test("5. Invalid coordinates and future timestamps are rejected", async () => {
       region: "North",
       hazardType: "flood",
       severity: "high",
-      latitude: 120.5, // invalid > 90
+      latitude: 120.5,
       longitude: 78.0,
       radiusMeters: 500,
       verificationStatus: "unverified",
@@ -266,7 +412,7 @@ test("5. Invalid coordinates and future timestamps are rejected", async () => {
   );
 });
 
-test("6. Simulated presence signals cannot be created directly as field_verified", async () => {
+test("7. Simulated presence signals cannot be created or promoted as field_verified", async () => {
   await seedOrgWithMembers();
   const operatorDb = testEnv.authenticatedContext(OPERATOR_UID).firestore();
   const now = new Date();
@@ -288,7 +434,7 @@ test("6. Simulated presence signals cannot be created directly as field_verified
       estimatedMinCount: 1,
       estimatedMaxCount: 2,
       confidencePercent: 80,
-      verificationStatus: "field_verified", // MUST FAIL on create!
+      verificationStatus: "field_verified",
       dataSource: "Sim",
       verifiedByUid: OPERATOR_UID,
       verificationNotes: "Auto",
@@ -298,112 +444,7 @@ test("6. Simulated presence signals cannot be created directly as field_verified
       updatedAt: now,
     })
   );
-});
 
-test("7. SOS incident workflow enforces authorized transitions, audit logs, and closed lock", async () => {
-  await seedOrgWithMembers();
-  const operatorDb = testEnv.authenticatedContext(OPERATOR_UID).firestore();
-  const leaderDb = testEnv.authenticatedContext(LEADER_UID).firestore();
-  const outsiderDb = testEnv.authenticatedContext(OUTSIDER_UID).firestore();
-  const now = new Date();
-
-  const sosRef = operatorDb.collection("organizations").doc(ORG_ID).collection("sos_incidents").doc("sos_001");
-  await assertSucceeds(
-    sosRef.set({
-      incidentId: "sos_001",
-      orgId: ORG_ID,
-      senderUid: OPERATOR_UID,
-      senderName: "Field Scout",
-      teamCode: "NDRF-A1",
-      priority: "sos",
-      description: "Wall collapse near Sector 2 culvert.",
-      status: "delivered",
-      hasLocation: false,
-      latitude: 0,
-      longitude: 0,
-      accuracyMeters: 0,
-      assignedTeamId: "",
-      assignedTeamCode: "",
-      acknowledgedByUid: "",
-      acknowledgedAtMillis: 0,
-      deliveryNote: "Saved to Firestore",
-      isSynthetic: false,
-      createdAt: now,
-      updatedAt: now,
-    })
-  );
-
-  // Outsider cannot read or update SOS
-  await assertFails(outsiderDb.collection("organizations").doc(ORG_ID).collection("sos_incidents").doc("sos_001").get());
-  await assertFails(
-    outsiderDb.collection("organizations").doc(ORG_ID).collection("sos_incidents").doc("sos_001").update({
-      status: "acknowledged",
-      updatedAt: now,
-    })
-  );
-
-  // Operator cannot close SOS directly (requires team_leader or org_admin)
-  await assertFails(sosRef.update({ status: "closed", updatedAt: now }));
-
-  // Team leader acknowledges and closes SOS
-  const leaderSosRef = leaderDb.collection("organizations").doc(ORG_ID).collection("sos_incidents").doc("sos_001");
-  await assertSucceeds(
-    leaderSosRef.update({
-      status: "acknowledged",
-      acknowledgedByUid: LEADER_UID,
-      acknowledgedAtMillis: Date.now(),
-      updatedAt: now,
-    })
-  );
-  await assertSucceeds(
-    leaderSosRef.collection("audit_logs").doc("log_1").set({
-      orgId: ORG_ID,
-      incidentId: "sos_001",
-      actorUid: LEADER_UID,
-      fromStatus: "delivered",
-      toStatus: "acknowledged",
-      note: "Acknowledged by leader",
-      createdAt: now,
-    })
-  );
-  await assertSucceeds(leaderSosRef.update({ status: "closed", updatedAt: now }));
-
-  // Closed SOS cannot be reopened
-  await assertFails(leaderSosRef.update({ status: "responding", updatedAt: now }));
-});
-
-test("8. Observer cannot create SOS or registry entries, and simulated signal cannot be promoted to field_verified", async () => {
-  await seedOrgWithMembers();
-  const observerDb = testEnv.authenticatedContext(OBSERVER_UID).firestore();
-  const operatorDb = testEnv.authenticatedContext(OPERATOR_UID).firestore();
-  const now = new Date();
-
-  await assertFails(
-    observerDb.collection("organizations").doc(ORG_ID).collection("sos_incidents").doc("sos_obs").set({
-      incidentId: "sos_obs",
-      orgId: ORG_ID,
-      senderUid: OBSERVER_UID,
-      senderName: "Observer",
-      teamCode: "OBS-04",
-      priority: "sos",
-      description: "Observer attempt",
-      status: "delivered",
-      hasLocation: false,
-      latitude: 0,
-      longitude: 0,
-      accuracyMeters: 0,
-      assignedTeamId: "",
-      assignedTeamCode: "",
-      acknowledgedByUid: "",
-      acknowledgedAtMillis: 0,
-      deliveryNote: "Attempt",
-      isSynthetic: false,
-      createdAt: now,
-      updatedAt: now,
-    })
-  );
-
-  // Create a simulated signal validly as estimated
   const simRef = operatorDb.collection("organizations").doc(ORG_ID).collection("presence_signals").doc("sim_01");
   await assertSucceeds(
     simRef.set({
@@ -433,18 +474,222 @@ test("8. Observer cannot create SOS or registry entries, and simulated signal ca
     })
   );
 
-  // Attempting to mark simulated signal as field_verified MUST FAIL
   await assertFails(
     simRef.update({
       verificationStatus: "field_verified",
       verifiedByUid: OPERATOR_UID,
-      verificationNotes: "Trying to bypass",
+      verificationNotes: "Bypass attempt",
       updatedAt: now,
     })
   );
 });
 
-test("9. Legacy user-scoped data remains readable only by owner for migration", async () => {
+test("8. SOS state machine enforces ack attribution, immutable metadata, legal transitions, and closed lock", async () => {
+  await seedOrgWithMembers();
+  const operatorDb = testEnv.authenticatedContext(OPERATOR_UID).firestore();
+  const leaderDb = testEnv.authenticatedContext(LEADER_UID).firestore();
+  const outsiderDb = testEnv.authenticatedContext(OUTSIDER_UID).firestore();
+  const now = new Date();
+
+  const sosRef = operatorDb.collection("organizations").doc(ORG_ID).collection("sos_incidents").doc("sos_001");
+  await assertSucceeds(
+    sosRef.set({
+      incidentId: "sos_001",
+      orgId: ORG_ID,
+      senderUid: OPERATOR_UID,
+      senderName: "Field Scout",
+      teamCode: "NDRF-A1",
+      priority: "sos",
+      description: "Wall collapse near Sector 2 culvert.",
+      status: "delivered",
+      hasLocation: false,
+      latitude: 0,
+      longitude: 0,
+      accuracyMeters: 0,
+      assignedTeamId: "",
+      assignedTeamCode: "",
+      acknowledgedByUid: "",
+      acknowledgedAtMillis: 0,
+      deliveryNote: "Saved to Firestore",
+      notificationStatus: "pending_push",
+      pushAttemptedCount: 0,
+      isSynthetic: false,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Outsider cannot read or update SOS
+  await assertFails(outsiderDb.collection("organizations").doc(ORG_ID).collection("sos_incidents").doc("sos_001").get());
+  await assertFails(
+    outsiderDb.collection("organizations").doc(ORG_ID).collection("sos_incidents").doc("sos_001").update({
+      status: "acknowledged",
+      updatedAt: now,
+    })
+  );
+
+  // Operator cannot close SOS directly or tamper with description
+  await assertFails(sosRef.update({ status: "closed", updatedAt: now }));
+  await assertFails(sosRef.update({ description: "Tampered", updatedAt: now }));
+
+  // Leader cannot spoof someone else's acknowledgedByUid
+  const leaderSosRef = leaderDb.collection("organizations").doc(ORG_ID).collection("sos_incidents").doc("sos_001");
+  await assertFails(
+    leaderSosRef.update({
+      status: "acknowledged",
+      acknowledgedByUid: OPERATOR_UID, // spoofing another user!
+      acknowledgedAtMillis: Date.now(),
+      updatedAt: now,
+    })
+  );
+
+  // Leader validly acknowledges SOS with own UID
+  await assertSucceeds(
+    leaderSosRef.update({
+      status: "acknowledged",
+      acknowledgedByUid: LEADER_UID,
+      acknowledgedAtMillis: Date.now(),
+      updatedAt: now,
+    })
+  );
+
+  await assertSucceeds(
+    leaderSosRef.collection("audit_logs").doc("log_1").set({
+      orgId: ORG_ID,
+      incidentId: "sos_001",
+      actorUid: LEADER_UID,
+      fromStatus: "delivered",
+      toStatus: "acknowledged",
+      note: "Acknowledged by leader",
+      createdAt: now,
+    })
+  );
+
+  await assertSucceeds(leaderSosRef.update({ status: "closed", updatedAt: now }));
+
+  // Closed SOS cannot be reopened (even backwards or forward)
+  await assertFails(leaderSosRef.update({ status: "responding", updatedAt: now }));
+
+  // Client cannot forge server-side notification_dispatches proofs
+  await assertFails(
+    leaderDb.collection("organizations").doc(ORG_ID).collection("notification_dispatches").doc("disp_fake").set({
+      incidentId: "sos_001",
+      status: "fcm_accepted",
+      createdAt: now,
+    })
+  );
+});
+
+test("9. Observer cannot write SOS/missions; org activity logs, blocked roads & user FCM tokens obey RBAC", async () => {
+  await seedOrgWithMembers();
+  const observerDb = testEnv.authenticatedContext(OBSERVER_UID).firestore();
+  const operatorDb = testEnv.authenticatedContext(OPERATOR_UID).firestore();
+  const leaderDb = testEnv.authenticatedContext(LEADER_UID).firestore();
+  const now = new Date();
+
+  await assertFails(
+    observerDb.collection("organizations").doc(ORG_ID).collection("sos_incidents").doc("sos_obs").set({
+      incidentId: "sos_obs",
+      orgId: ORG_ID,
+      senderUid: OBSERVER_UID,
+      senderName: "Observer",
+      teamCode: "OBS-04",
+      priority: "sos",
+      description: "Observer attempt",
+      status: "delivered",
+      hasLocation: false,
+      latitude: 0,
+      longitude: 0,
+      accuracyMeters: 0,
+      assignedTeamId: "",
+      assignedTeamCode: "",
+      acknowledgedByUid: "",
+      acknowledgedAtMillis: 0,
+      deliveryNote: "Attempt",
+      isSynthetic: false,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Leader can create mission; operator can only update status, not create
+  await assertFails(
+    operatorDb.collection("organizations").doc(ORG_ID).collection("missions").doc("m_01").set({
+      missionId: "m_01",
+      orgId: ORG_ID,
+      title: "Clear Ridge Road",
+      description: "Deploy unit",
+      linkedIncidentId: "sos_001",
+      assignedTeamId: "team_alpha",
+      assignedTeamCode: "NDRF-A1",
+      priority: "high",
+      status: "planned",
+      targetLatitude: 30.55,
+      targetLongitude: 79.56,
+      createdByUid: OPERATOR_UID,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+  await assertSucceeds(
+    leaderDb.collection("organizations").doc(ORG_ID).collection("missions").doc("m_01").set({
+      missionId: "m_01",
+      orgId: ORG_ID,
+      title: "Clear Ridge Road",
+      description: "Deploy unit",
+      linkedIncidentId: "sos_001",
+      assignedTeamId: "team_alpha",
+      assignedTeamCode: "NDRF-A1",
+      priority: "high",
+      status: "planned",
+      targetLatitude: 30.55,
+      targetLongitude: 79.56,
+      createdByUid: LEADER_UID,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Operator can log blocked road & own FCM device token, cannot write another user's FCM token
+  await assertSucceeds(
+    operatorDb.collection("organizations").doc(ORG_ID).collection("blocked_roads").doc("road_1").set({
+      orgId: ORG_ID,
+      reportedByUid: OPERATOR_UID,
+      label: "NH-7 Culvert Washout",
+      latitude: 30.54,
+      longitude: 79.55,
+      severity: "blocked",
+      active: true,
+      notes: "Bridge submerged",
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+  await assertSucceeds(
+    operatorDb.collection("users").doc(OPERATOR_UID).collection("devices").doc("dev_01").set({
+      userId: OPERATOR_UID,
+      deviceId: "dev_01",
+      fcmToken: "fcm_valid_token_1234567890",
+      orgId: ORG_ID,
+      notificationsEnabled: true,
+      platform: "android",
+      updatedAt: now,
+    })
+  );
+  await assertFails(
+    operatorDb.collection("users").doc(LEADER_UID).collection("devices").doc("dev_01").set({
+      userId: LEADER_UID,
+      deviceId: "dev_01",
+      fcmToken: "fcm_spoofed_token_123456",
+      orgId: ORG_ID,
+      notificationsEnabled: true,
+      platform: "android",
+      updatedAt: now,
+    })
+  );
+});
+
+test("10. Legacy user-scoped data remains readable only by owner for migration", async () => {
   await testEnv.withSecurityRulesDisabled(async (ctx) => {
     await ctx.firestore().collection("users").doc(OPERATOR_UID).collection("rescue_locations").doc("leg_1").set({
       name: "Legacy Ridge",

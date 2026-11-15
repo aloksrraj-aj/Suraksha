@@ -18,6 +18,8 @@ import org.json.JSONObject
 
 class SurakshaAiRepository {
 
+    private var lastRequestAtMillis = 0L
+
     private val triageSchema = Schema.obj(
         properties = mapOf(
             "executiveSummary" to Schema.string(
@@ -42,9 +44,9 @@ class SurakshaAiRepository {
         )
     )
 
-    private val model by lazy {
+    private val primaryTriageModel by lazy {
         Firebase.ai.generativeModel(
-            modelName = "gemini-3.8-flash",
+            modelName = PRIMARY_MODEL,
             generationConfig = generationConfig {
                 responseMimeType = "application/json"
                 responseSchema = triageSchema
@@ -52,10 +54,22 @@ class SurakshaAiRepository {
         )
     }
 
-    private val chatModel by lazy {
+    private val fallbackTriageModel by lazy {
         Firebase.ai.generativeModel(
-            modelName = "gemini-3.8-flash"
+            modelName = FALLBACK_MODEL,
+            generationConfig = generationConfig {
+                responseMimeType = "application/json"
+                responseSchema = triageSchema
+            }
         )
+    }
+
+    private val primaryChatModel by lazy {
+        Firebase.ai.generativeModel(modelName = PRIMARY_MODEL)
+    }
+
+    private val fallbackChatModel by lazy {
+        Firebase.ai.generativeModel(modelName = FALLBACK_MODEL)
     }
 
     suspend fun generateSituationTriage(
@@ -65,7 +79,15 @@ class SurakshaAiRepository {
         registry: List<RescueRegistryEntry>,
         incidents: List<SosIncident>,
         isDemoMode: Boolean,
+        languageCode: String = "en",
     ): Result<AiTriageReport> {
+        val now = System.currentTimeMillis()
+        if (now - lastRequestAtMillis < COOLDOWN_MILLIS) {
+            val waitSec = ((COOLDOWN_MILLIS - (now - lastRequestAtMillis)) / 1000L).coerceAtLeast(1L)
+            return Result.failure(IllegalStateException("AI cooldown active (${waitSec}s remaining) to prevent rapid quota spikes."))
+        }
+        lastRequestAtMillis = now
+
         val sourcesUsed = buildList {
             if (incidents.isNotEmpty()) add("Firestore SOS Incidents (${incidents.size})")
             if (locations.isNotEmpty()) add("Disaster Sites (${locations.size})")
@@ -82,25 +104,44 @@ class SurakshaAiRepository {
             registry = registry,
             incidents = incidents,
             isDemoMode = isDemoMode,
+            languageCode = languageCode,
+            nowMillis = now,
         )
 
-        return try {
-            val response = withTimeout(60_000L) {
-                model.generateContent(contextPrompt)
+        var usedModel = PRIMARY_MODEL
+        val response = try {
+            withTimeout(60_000L) {
+                primaryTriageModel.generateContent(contextPrompt)
             }
-            val jsonText = response.text ?: return Result.failure(
-                IllegalStateException("AI model returned an empty triage response.")
-            )
-            parseAiTriageJson(jsonText, sourcesUsed)
         } catch (e: TimeoutCancellationException) {
-            Log.e(TAG, "AI triage timed out", e)
-            Result.failure(Exception("AI triage timed out after 60 seconds. Check network and retry."))
+            Log.e(TAG, "Primary AI triage timed out", e)
+            return Result.failure(Exception("AI triage timed out after 60 seconds. Check network and retry."))
         } catch (e: CancellationException) {
             throw e
-        } catch (e: Exception) {
-            Log.e(TAG, "AI triage generation failed", e)
-            Result.failure(e)
+        } catch (primaryErr: Exception) {
+            Log.w(TAG, "Primary model failed, retrying with $FALLBACK_MODEL: ${primaryErr.message}")
+            usedModel = FALLBACK_MODEL
+            try {
+                withTimeout(45_000L) {
+                    fallbackTriageModel.generateContent(contextPrompt)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (fallbackErr: Exception) {
+                Log.e(TAG, "Fallback AI triage also failed", fallbackErr)
+                return Result.failure(fallbackErr)
+            }
         }
+
+        val jsonText = response.text ?: return Result.failure(
+            IllegalStateException("AI model returned an empty triage response.")
+        )
+        return parseAiTriageJson(
+            rawJson = jsonText,
+            dataSourcesUsed = sourcesUsed,
+            modelUsed = usedModel,
+            languageCode = languageCode,
+        )
     }
 
     suspend fun askOperationalQuestion(
@@ -111,12 +152,33 @@ class SurakshaAiRepository {
         registry: List<RescueRegistryEntry>,
         incidents: List<SosIncident>,
         isDemoMode: Boolean,
+        languageCode: String = "en",
     ): Result<String> {
         val trimmed = question.trim()
         if (trimmed.isBlank()) {
             return Result.failure(IllegalArgumentException("Enter a coordination question first."))
         }
-        val context = buildOperationalContextPrompt(locations, signals, teams, registry, incidents, isDemoMode)
+        val now = System.currentTimeMillis()
+        if (now - lastRequestAtMillis < COOLDOWN_MILLIS) {
+            return Result.failure(IllegalStateException("Please wait a moment between AI queries."))
+        }
+        lastRequestAtMillis = now
+
+        val context = buildOperationalContextPrompt(
+            locations = locations,
+            signals = signals,
+            teams = teams,
+            registry = registry,
+            incidents = incidents,
+            isDemoMode = isDemoMode,
+            languageCode = languageCode,
+            nowMillis = now,
+        )
+        val langInstruction = if (languageCode == "hi") {
+            "Respond clearly in Hindi (Devanagari script), keeping technical IDs/codes in Latin characters."
+        } else {
+            "Respond concisely in English."
+        }
         val fullPrompt = """
             $context
             
@@ -124,15 +186,20 @@ class SurakshaAiRepository {
             $trimmed
             
             ANSWER INSTRUCTIONS:
+            - $langInstruction
             - Answer strictly using the authorized operational data above.
-            - Never invent counts, coordinates, team locations, or survivor statuses.
+            - Never invent counts, coordinates, team locations, timestamps, or survivor statuses.
             - Explicitly disclose any missing GPS, simulated-only signals, or outdated/unverified data.
             - End with: "Advisory Only — Human commander approval required before dispatch."
         """.trimIndent()
 
         return try {
-            val response = withTimeout(60_000L) {
-                chatModel.generateContent(fullPrompt)
+            val response = try {
+                withTimeout(60_000L) { primaryChatModel.generateContent(fullPrompt) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                withTimeout(45_000L) { fallbackChatModel.generateContent(fullPrompt) }
             }
             val text = response.text?.trim()
             if (text.isNullOrBlank()) {
@@ -152,6 +219,9 @@ class SurakshaAiRepository {
 
     companion object {
         private const val TAG = "SurakshaAiRepo"
+        const val PRIMARY_MODEL = "gemini-3.8-flash"
+        const val FALLBACK_MODEL = "gemini-3.5-flash-lite"
+        private const val COOLDOWN_MILLIS = 4_000L
 
         fun buildOperationalContextPrompt(
             locations: List<RescueLocation>,
@@ -160,20 +230,26 @@ class SurakshaAiRepository {
             registry: List<RescueRegistryEntry>,
             incidents: List<SosIncident>,
             isDemoMode: Boolean,
+            languageCode: String = "en",
+            nowMillis: Long = System.currentTimeMillis(),
         ): String = buildString {
             appendLine("You are a humanitarian disaster-rescue coordination analyst for PROJECT SURAKSHA.")
             appendLine("Strict accuracy & humanitarian rules:")
             appendLine("1. NEVER fabricate GPS coordinates, team statuses, timestamps, or sensor counts.")
             appendLine("2. NEVER present simulated or estimated presence signals as confirmed survivors.")
             appendLine("3. Explicitly distinguish simulated vs hardware, and verified vs estimated vs unverified vs outdated.")
-            appendLine("4. Explicitly mention missing location data or unacknowledged SOS alerts.")
+            appendLine("4. Explicitly mention missing location data, stale readings (>120s), or unacknowledged SOS alerts.")
             appendLine("5. Never profile or classify any individual negatively.")
+            if (languageCode == "hi") {
+                appendLine("6. Write all narrative values in Hindi (Devanagari), preserving technical IDs and coordinates.")
+            }
             appendLine()
+            appendLine("SNAPSHOT_TIME_MILLIS: $nowMillis")
             appendLine("DEMO_MODE_ACTIVE: $isDemoMode")
             appendLine("SOS_INCIDENTS (${incidents.size}):")
             incidents.take(8).forEach {
                 val locLabel = if (it.hasLocation) "${it.latitude},${it.longitude}" else "NO_GPS"
-                appendLine("- [${it.incidentId}] ${it.priority} | status=${it.status} | team=${it.teamCode} | loc=$locLabel | desc=${it.description}")
+                appendLine("- [${it.incidentId}] ${it.priority} | status=${it.status} | push=${it.notificationStatus} | team=${it.teamCode} | loc=$locLabel | desc=${it.description}")
             }
             appendLine("DISASTER_LOCATIONS (${locations.size}):")
             locations.take(8).forEach {
@@ -181,7 +257,8 @@ class SurakshaAiRepository {
             }
             appendLine("PRESENCE_SIGNALS (${signals.size}):")
             signals.take(8).forEach {
-                appendLine("- ${it.sectorLabel} | kind=${it.sourceKind} | type=${it.signalType} | est=${it.estimatedMinCount}-${it.estimatedMaxCount} | conf=${it.confidencePercent}% | status=${it.verificationStatus} | health=${it.sensorHealth}")
+                val ageSec = if (it.observationTimestampMillis > 0L) ((nowMillis - it.observationTimestampMillis).coerceAtLeast(0L) / 1000L) else -1L
+                appendLine("- ${it.sectorLabel} | kind=${it.sourceKind} | type=${it.signalType} | est=${it.estimatedMinCount}-${it.estimatedMaxCount} | conf=${it.confidencePercent}% | status=${it.verificationStatus} | ageSec=$ageSec | health=${it.sensorHealth}")
             }
             appendLine("RESCUE_TEAMS (${teams.size}):")
             teams.take(8).forEach {
@@ -190,13 +267,16 @@ class SurakshaAiRepository {
             }
             appendLine("REGISTRY_ENTRIES (${registry.size}):")
             registry.take(8).forEach {
-                appendLine("- [${it.category}] ${it.title} at ${it.locationName} | rescue=${it.rescueStatus} | verification=${it.verificationStatus}")
+                val med = if (it.category == "medical_request") " | medUrgency=${it.medicalUrgency} | medCat=${it.medicalCategory}" else ""
+                appendLine("- [${it.category}] ${it.title} at ${it.locationName} | rescue=${it.rescueStatus} | verification=${it.verificationStatus}$med")
             }
         }
 
         fun parseAiTriageJson(
             rawJson: String,
             dataSourcesUsed: List<String>,
+            modelUsed: String = PRIMARY_MODEL,
+            languageCode: String = "en",
         ): Result<AiTriageReport> {
             return try {
                 val json = JSONObject(rawJson)
@@ -218,6 +298,8 @@ class SurakshaAiRepository {
                         dataSourcesUsed = dataSourcesUsed,
                         recommendedActions = extractList("recommendedActions"),
                         requiresHumanApproval = true,
+                        modelUsed = modelUsed,
+                        languageCode = languageCode,
                     )
                 )
             } catch (e: Exception) {

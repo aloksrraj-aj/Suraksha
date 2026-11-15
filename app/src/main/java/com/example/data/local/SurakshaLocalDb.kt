@@ -32,7 +32,7 @@ data class OfflineMapRegionEntity(
     val maxZoom: Int = 8,
     val tilesStored: Int = 0,
     val bytesStored: Long = 0L,
-    val dataVersion: String = "osm-raster-v1",
+    val dataVersion: String = "topo-raster-v2",
 )
 
 @Entity(tableName = "cached_map_tiles")
@@ -60,6 +60,29 @@ data class PendingSyncOperationEntity(
     val lastError: String,
     val createdAtMillis: Long,
     val updatedAtMillis: Long,
+    val idempotencyKey: String = "",
+    val nextRetryAtMillis: Long = 0L,
+    val conflictNote: String = "",
+)
+
+@Entity(tableName = "sync_history")
+data class SyncHistoryEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0L,
+    val operationId: String,
+    val orgId: String,
+    val entityType: String,
+    val outcome: String, // "synced", "failed", "dead_letter"
+    val detail: String,
+    val syncedAtMillis: Long,
+)
+
+@Entity(tableName = "joined_organizations")
+data class JoinedOrgEntity(
+    @PrimaryKey val orgId: String,
+    val orgName: String,
+    val orgCode: String,
+    val role: String,
+    val lastAccessedMillis: Long,
 )
 
 @Entity(tableName = "slam_sessions")
@@ -127,11 +150,20 @@ interface SurakshaLocalDao {
     @Query("SELECT * FROM cached_map_tiles WHERE regionId = :regionId")
     suspend fun getTilesForRegion(regionId: String): List<CachedMapTileEntity>
 
+    @Query("SELECT * FROM cached_map_tiles WHERE regionId = 'ad_hoc_viewport' ORDER BY downloadedAtMillis ASC LIMIT :limit")
+    suspend fun getOldestViewportTiles(limit: Int): List<CachedMapTileEntity>
+
+    @Query("DELETE FROM cached_map_tiles WHERE tileKey = :tileKey")
+    suspend fun deleteTileByKey(tileKey: String)
+
     @Query("SELECT COUNT(*) FROM cached_map_tiles WHERE regionId = :regionId")
     suspend fun countTilesForRegion(regionId: String): Int
 
     @Query("SELECT COALESCE(SUM(byteSize), 0) FROM cached_map_tiles WHERE regionId = :regionId")
     suspend fun sumTileBytesForRegion(regionId: String): Long
+
+    @Query("SELECT COALESCE(SUM(byteSize), 0) FROM cached_map_tiles")
+    suspend fun getTotalCachedBytesSync(): Long
 
     @Query("DELETE FROM cached_map_tiles WHERE regionId = :regionId")
     suspend fun deleteTilesForRegion(regionId: String)
@@ -145,14 +177,29 @@ interface SurakshaLocalDao {
     @Query("SELECT * FROM pending_sync_operations ORDER BY createdAtMillis ASC")
     fun observePendingSyncOperations(): Flow<List<PendingSyncOperationEntity>>
 
-    @Query("SELECT * FROM pending_sync_operations WHERE syncStatus IN ('pending_sync', 'sync_failed') ORDER BY createdAtMillis ASC")
-    suspend fun getRetryableOperations(): List<PendingSyncOperationEntity>
+    @Query("SELECT * FROM pending_sync_operations WHERE syncStatus IN ('pending_sync', 'sync_failed') AND retryCount < 5 AND nextRetryAtMillis <= :nowMillis ORDER BY createdAtMillis ASC")
+    suspend fun getRetryableOperations(nowMillis: Long = System.currentTimeMillis()): List<PendingSyncOperationEntity>
+
+    @Query("SELECT * FROM pending_sync_operations WHERE operationId = :operationId LIMIT 1")
+    suspend fun getPendingOperationById(operationId: String): PendingSyncOperationEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertPendingSyncOperation(op: PendingSyncOperationEntity)
 
     @Query("DELETE FROM pending_sync_operations WHERE operationId = :operationId")
     suspend fun deletePendingSyncOperation(operationId: String)
+
+    @Query("SELECT * FROM sync_history ORDER BY syncedAtMillis DESC LIMIT 50")
+    fun observeSyncHistory(): Flow<List<SyncHistoryEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertSyncHistory(entry: SyncHistoryEntity)
+
+    @Query("SELECT * FROM joined_organizations ORDER BY lastAccessedMillis DESC")
+    fun observeJoinedOrganizations(): Flow<List<JoinedOrgEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertJoinedOrganization(org: JoinedOrgEntity)
 
     @Query("SELECT * FROM slam_sessions ORDER BY createdAtMillis DESC LIMIT 30")
     fun observeSlamSessions(): Flow<List<SlamSessionEntity>>
@@ -172,10 +219,12 @@ interface SurakshaLocalDao {
         OfflineMapRegionEntity::class,
         CachedMapTileEntity::class,
         PendingSyncOperationEntity::class,
+        SyncHistoryEntity::class,
+        JoinedOrgEntity::class,
         SlamSessionEntity::class,
         CachedSensorLogEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 abstract class SurakshaLocalDatabase : RoomDatabase() {
@@ -193,7 +242,6 @@ abstract class SurakshaLocalDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE offline_map_regions ADD COLUMN tilesStored INTEGER NOT NULL DEFAULT 0")
                 db.execSQL("ALTER TABLE offline_map_regions ADD COLUMN bytesStored INTEGER NOT NULL DEFAULT 0")
                 db.execSQL("ALTER TABLE offline_map_regions ADD COLUMN dataVersion TEXT NOT NULL DEFAULT 'osm-raster-v1'")
-                // Reset previously seeded fake downloaded flags so downloaded status only reflects actual local tiles
                 db.execSQL("UPDATE offline_map_regions SET isDownloaded = 0, tilesStored = 0, bytesStored = 0, sizeMb = 0.0")
 
                 db.execSQL("ALTER TABLE cached_sensor_logs ADD COLUMN sourceKind TEXT NOT NULL DEFAULT 'simulated'")
@@ -253,6 +301,39 @@ abstract class SurakshaLocalDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_2_3: Migration = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE pending_sync_operations ADD COLUMN idempotencyKey TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE pending_sync_operations ADD COLUMN nextRetryAtMillis INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE pending_sync_operations ADD COLUMN conflictNote TEXT NOT NULL DEFAULT ''")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS sync_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        operationId TEXT NOT NULL,
+                        orgId TEXT NOT NULL,
+                        entityType TEXT NOT NULL,
+                        outcome TEXT NOT NULL,
+                        detail TEXT NOT NULL,
+                        syncedAtMillis INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS joined_organizations (
+                        orgId TEXT NOT NULL PRIMARY KEY,
+                        orgName TEXT NOT NULL,
+                        orgCode TEXT NOT NULL,
+                        role TEXT NOT NULL,
+                        lastAccessedMillis INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         @Volatile
         private var instance: SurakshaLocalDatabase? = null
 
@@ -263,7 +344,7 @@ abstract class SurakshaLocalDatabase : RoomDatabase() {
                     SurakshaLocalDatabase::class.java,
                     "suraksha_offline_cache.db"
                 )
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .build()
                     .also { instance = it }
             }
@@ -275,13 +356,13 @@ class OfflineCacheRepository(private val dao: SurakshaLocalDao) {
     val offlineRegions: Flow<List<OfflineMapRegionEntity>> = dao.observeOfflineRegions()
     val recentSensorLogs: Flow<List<CachedSensorLogEntity>> = dao.observeRecentSensorLogs()
     val pendingSyncOperations: Flow<List<PendingSyncOperationEntity>> = dao.observePendingSyncOperations()
+    val syncHistory: Flow<List<SyncHistoryEntity>> = dao.observeSyncHistory()
+    val joinedOrganizations: Flow<List<JoinedOrgEntity>> = dao.observeJoinedOrganizations()
     val slamSessions: Flow<List<SlamSessionEntity>> = dao.observeSlamSessions()
     val totalCachedTileCount: Flow<Int> = dao.observeTotalCachedTileCount()
     val totalCachedBytes: Flow<Long> = dao.observeTotalCachedBytes()
 
     suspend fun ensureDefaultRegionsSeeded() {
-        // Seed catalog metadata ONLY with isDownloaded = false and 0 bytes stored;
-        // real downloaded state is set strictly by OsmTileManager after real disk caching.
         dao.insertRegionsIfMissing(
             listOf(
                 OfflineMapRegionEntity(
@@ -292,7 +373,7 @@ class OfflineCacheRepository(private val dao: SurakshaLocalDao) {
                     sizeMb = 0.0,
                     isDownloaded = false,
                     lastSyncedMillis = 0L,
-                    attribution = "OpenStreetMap Contributors (ODbL) + Survey of India Boundary Ref",
+                    attribution = "OpenTopoMap (CC-BY-SA) + OpenStreetMap (ODbL) + Survey of India Boundary Ref",
                     minLat = 30.0,
                     maxLat = 36.2,
                     minLon = 73.5,
@@ -308,7 +389,7 @@ class OfflineCacheRepository(private val dao: SurakshaLocalDao) {
                     sizeMb = 0.0,
                     isDownloaded = false,
                     lastSyncedMillis = 0L,
-                    attribution = "OpenStreetMap Contributors (ODbL)",
+                    attribution = "OpenTopoMap (CC-BY-SA) + OpenStreetMap (ODbL)",
                     minLat = 25.0,
                     maxLat = 28.3,
                     minLon = 90.0,
@@ -324,7 +405,7 @@ class OfflineCacheRepository(private val dao: SurakshaLocalDao) {
                     sizeMb = 0.0,
                     isDownloaded = false,
                     lastSyncedMillis = 0L,
-                    attribution = "OpenStreetMap Contributors (ODbL)",
+                    attribution = "OpenTopoMap (CC-BY-SA) + OpenStreetMap (ODbL)",
                     minLat = 22.2,
                     maxLat = 24.5,
                     minLon = 68.5,
@@ -340,7 +421,7 @@ class OfflineCacheRepository(private val dao: SurakshaLocalDao) {
                     sizeMb = 0.0,
                     isDownloaded = false,
                     lastSyncedMillis = 0L,
-                    attribution = "OpenStreetMap Contributors (ODbL)",
+                    attribution = "OpenTopoMap (CC-BY-SA) + OpenStreetMap (ODbL)",
                     minLat = 19.0,
                     maxLat = 21.8,
                     minLon = 84.5,
@@ -348,6 +429,19 @@ class OfflineCacheRepository(private val dao: SurakshaLocalDao) {
                     minZoom = 6,
                     maxZoom = 8,
                 ),
+            )
+        )
+    }
+
+    suspend fun recordJoinedOrganization(orgId: String, orgName: String, orgCode: String, role: String) {
+        if (orgId.isBlank()) return
+        dao.upsertJoinedOrganization(
+            JoinedOrgEntity(
+                orgId = orgId,
+                orgName = orgName.ifBlank { orgId },
+                orgCode = orgCode.ifBlank { "SUR" },
+                role = role,
+                lastAccessedMillis = System.currentTimeMillis(),
             )
         )
     }
