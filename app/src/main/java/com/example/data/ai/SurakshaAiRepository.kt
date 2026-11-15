@@ -6,6 +6,7 @@ import com.example.data.model.PresenceSignal
 import com.example.data.model.RescueLocation
 import com.example.data.model.RescueRegistryEntry
 import com.example.data.model.RescueTeam
+import com.example.data.model.SosIncident
 import com.google.firebase.Firebase
 import com.google.firebase.ai.ai
 import com.google.firebase.ai.type.Schema
@@ -20,19 +21,23 @@ class SurakshaAiRepository {
     private val triageSchema = Schema.obj(
         properties = mapOf(
             "executiveSummary" to Schema.string(
-                description = "Concise humanitarian disaster situation summary based strictly on the provided observations."
+                description = "Concise humanitarian disaster situation summary strictly derived from provided observations."
+            ),
+            "unacknowledgedSosSummary" to Schema.array(
+                items = Schema.string(),
+                description = "List of active or unacknowledged SOS incidents requiring responder action."
             ),
             "prioritizedSectors" to Schema.array(
                 items = Schema.string(),
-                description = "Top 2-4 rescue sectors ordered by urgency and verification status."
+                description = "Top rescue sectors ordered by severity and verification status."
             ),
-            "verificationGaps" to Schema.array(
+            "missingOrStaleDisclosures" to Schema.array(
                 items = Schema.string(),
-                description = "Observations that remain unverified, estimated, or outdated and require human field verification."
+                description = "Explicit disclosure of missing GPS coordinates, outdated sensor signals (>120s), or simulated-only data."
             ),
             "recommendedActions" to Schema.array(
                 items = Schema.string(),
-                description = "Actionable next coordination steps for rescue teams."
+                description = "Advisory next coordination steps requiring human commander approval."
             ),
         )
     )
@@ -47,39 +52,37 @@ class SurakshaAiRepository {
         )
     }
 
+    private val chatModel by lazy {
+        Firebase.ai.generativeModel(
+            modelName = "gemini-3.8-flash"
+        )
+    }
+
     suspend fun generateSituationTriage(
         locations: List<RescueLocation>,
         signals: List<PresenceSignal>,
         teams: List<RescueTeam>,
         registry: List<RescueRegistryEntry>,
+        incidents: List<SosIncident>,
         isDemoMode: Boolean,
     ): Result<AiTriageReport> {
-        val contextPrompt = buildString {
-            appendLine("You are a humanitarian disaster-rescue coordination analyst for PROJECT SURAKSHA.")
-            appendLine("Strict safety & accuracy rules:")
-            appendLine("1. Never treat estimated human-presence signals as confirmed survivor counts.")
-            appendLine("2. Clearly distinguish Verified, Estimated, Unverified, and Outdated records.")
-            appendLine("3. Never classify or profile any person as a threat, criminal, or suspicious actor.")
-            appendLine("4. If DEMO MODE is active, note that input observations are synthetic simulation records.")
-            appendLine()
-            appendLine("DEMO_MODE_ACTIVE: $isDemoMode")
-            appendLine("DISASTER_LOCATIONS (${locations.size}):")
-            locations.take(6).forEach {
-                appendLine("- ${it.name} (${it.region}) | hazard=${it.hazardType} | severity=${it.severity} | status=${it.verificationStatus}")
-            }
-            appendLine("PRESENCE_SIGNALS (${signals.size}):")
-            signals.take(6).forEach {
-                appendLine("- ${it.sectorLabel} | type=${it.signalType} | est=${it.estimatedMinCount}-${it.estimatedMaxCount} | conf=${it.confidencePercent}% | status=${it.verificationStatus}")
-            }
-            appendLine("RESCUE_TEAMS (${teams.size}):")
-            teams.take(6).forEach {
-                appendLine("- ${it.teamCode} (${it.teamName}) | status=${it.status} | active=${it.activeCount}/${it.memberCount} | conn=${it.connectionStatus}")
-            }
-            appendLine("REGISTRY_ENTRIES (${registry.size}):")
-            registry.take(6).forEach {
-                appendLine("- [${it.category}] ${it.title} at ${it.locationName} | rescue=${it.rescueStatus} | verification=${it.verificationStatus}")
-            }
+        val sourcesUsed = buildList {
+            if (incidents.isNotEmpty()) add("Firestore SOS Incidents (${incidents.size})")
+            if (locations.isNotEmpty()) add("Disaster Sites (${locations.size})")
+            if (signals.isNotEmpty()) add("Presence Signals (${signals.size})")
+            if (teams.isNotEmpty()) add("Rescue Teams (${teams.size})")
+            if (registry.isNotEmpty()) add("Rescue Registry (${registry.size})")
+            if (isEmpty()) add("No authorized org records available")
         }
+
+        val contextPrompt = buildOperationalContextPrompt(
+            locations = locations,
+            signals = signals,
+            teams = teams,
+            registry = registry,
+            incidents = incidents,
+            isDemoMode = isDemoMode,
+        )
 
         return try {
             val response = withTimeout(60_000L) {
@@ -88,25 +91,7 @@ class SurakshaAiRepository {
             val jsonText = response.text ?: return Result.failure(
                 IllegalStateException("AI model returned an empty triage response.")
             )
-            val json = JSONObject(jsonText)
-            val prioritized = json.optJSONArray("prioritizedSectors")?.let { arr ->
-                (0 until arr.length()).map { arr.getString(it) }
-            } ?: emptyList()
-            val gaps = json.optJSONArray("verificationGaps")?.let { arr ->
-                (0 until arr.length()).map { arr.getString(it) }
-            } ?: emptyList()
-            val actions = json.optJSONArray("recommendedActions")?.let { arr ->
-                (0 until arr.length()).map { arr.getString(it) }
-            } ?: emptyList()
-
-            Result.success(
-                AiTriageReport(
-                    executiveSummary = json.optString("executiveSummary", "Situational summary generated."),
-                    prioritizedSectors = prioritized,
-                    verificationGaps = gaps,
-                    recommendedActions = actions,
-                )
-            )
+            parseAiTriageJson(jsonText, sourcesUsed)
         } catch (e: TimeoutCancellationException) {
             Log.e(TAG, "AI triage timed out", e)
             Result.failure(Exception("AI triage timed out after 60 seconds. Check network and retry."))
@@ -118,7 +103,126 @@ class SurakshaAiRepository {
         }
     }
 
-    private companion object {
-        const val TAG = "SurakshaAiRepo"
+    suspend fun askOperationalQuestion(
+        question: String,
+        locations: List<RescueLocation>,
+        signals: List<PresenceSignal>,
+        teams: List<RescueTeam>,
+        registry: List<RescueRegistryEntry>,
+        incidents: List<SosIncident>,
+        isDemoMode: Boolean,
+    ): Result<String> {
+        val trimmed = question.trim()
+        if (trimmed.isBlank()) {
+            return Result.failure(IllegalArgumentException("Enter a coordination question first."))
+        }
+        val context = buildOperationalContextPrompt(locations, signals, teams, registry, incidents, isDemoMode)
+        val fullPrompt = """
+            $context
+            
+            RESPONDER QUESTION:
+            $trimmed
+            
+            ANSWER INSTRUCTIONS:
+            - Answer strictly using the authorized operational data above.
+            - Never invent counts, coordinates, team locations, or survivor statuses.
+            - Explicitly disclose any missing GPS, simulated-only signals, or outdated/unverified data.
+            - End with: "Advisory Only — Human commander approval required before dispatch."
+        """.trimIndent()
+
+        return try {
+            val response = withTimeout(60_000L) {
+                chatModel.generateContent(fullPrompt)
+            }
+            val text = response.text?.trim()
+            if (text.isNullOrBlank()) {
+                Result.failure(IllegalStateException("AI returned an empty answer."))
+            } else {
+                Result.success(text)
+            }
+        } catch (e: TimeoutCancellationException) {
+            Result.failure(Exception("AI assistant timed out after 60 seconds."))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "AI Q&A failed", e)
+            Result.failure(e)
+        }
+    }
+
+    companion object {
+        private const val TAG = "SurakshaAiRepo"
+
+        fun buildOperationalContextPrompt(
+            locations: List<RescueLocation>,
+            signals: List<PresenceSignal>,
+            teams: List<RescueTeam>,
+            registry: List<RescueRegistryEntry>,
+            incidents: List<SosIncident>,
+            isDemoMode: Boolean,
+        ): String = buildString {
+            appendLine("You are a humanitarian disaster-rescue coordination analyst for PROJECT SURAKSHA.")
+            appendLine("Strict accuracy & humanitarian rules:")
+            appendLine("1. NEVER fabricate GPS coordinates, team statuses, timestamps, or sensor counts.")
+            appendLine("2. NEVER present simulated or estimated presence signals as confirmed survivors.")
+            appendLine("3. Explicitly distinguish simulated vs hardware, and verified vs estimated vs unverified vs outdated.")
+            appendLine("4. Explicitly mention missing location data or unacknowledged SOS alerts.")
+            appendLine("5. Never profile or classify any individual negatively.")
+            appendLine()
+            appendLine("DEMO_MODE_ACTIVE: $isDemoMode")
+            appendLine("SOS_INCIDENTS (${incidents.size}):")
+            incidents.take(8).forEach {
+                val locLabel = if (it.hasLocation) "${it.latitude},${it.longitude}" else "NO_GPS"
+                appendLine("- [${it.incidentId}] ${it.priority} | status=${it.status} | team=${it.teamCode} | loc=$locLabel | desc=${it.description}")
+            }
+            appendLine("DISASTER_LOCATIONS (${locations.size}):")
+            locations.take(8).forEach {
+                appendLine("- ${it.name} (${it.region}) | hazard=${it.hazardType} | severity=${it.severity} | status=${it.verificationStatus} | src=${it.dataSource}")
+            }
+            appendLine("PRESENCE_SIGNALS (${signals.size}):")
+            signals.take(8).forEach {
+                appendLine("- ${it.sectorLabel} | kind=${it.sourceKind} | type=${it.signalType} | est=${it.estimatedMinCount}-${it.estimatedMaxCount} | conf=${it.confidencePercent}% | status=${it.verificationStatus} | health=${it.sensorHealth}")
+            }
+            appendLine("RESCUE_TEAMS (${teams.size}):")
+            teams.take(8).forEach {
+                val gps = if (it.hasValidLocation) "${it.latitude},${it.longitude}" else "UNAVAILABLE(${it.locationUnavailableReason})"
+                appendLine("- ${it.teamCode} (${it.teamName}) | status=${it.status} | active=${it.activeCount}/${it.memberCount} | conn=${it.connectionStatus} | gps=$gps")
+            }
+            appendLine("REGISTRY_ENTRIES (${registry.size}):")
+            registry.take(8).forEach {
+                appendLine("- [${it.category}] ${it.title} at ${it.locationName} | rescue=${it.rescueStatus} | verification=${it.verificationStatus}")
+            }
+        }
+
+        fun parseAiTriageJson(
+            rawJson: String,
+            dataSourcesUsed: List<String>,
+        ): Result<AiTriageReport> {
+            return try {
+                val json = JSONObject(rawJson)
+                val executiveSummary = json.optString("executiveSummary").trim()
+                if (executiveSummary.isBlank()) {
+                    return Result.failure(IllegalArgumentException("AI response omitted executiveSummary."))
+                }
+                fun extractList(key: String): List<String> =
+                    json.optJSONArray(key)?.let { arr ->
+                        (0 until arr.length()).mapNotNull { idx -> arr.optString(idx).takeIf { s -> s.isNotBlank() } }
+                    } ?: emptyList()
+
+                Result.success(
+                    AiTriageReport(
+                        executiveSummary = executiveSummary,
+                        unacknowledgedSosSummary = extractList("unacknowledgedSosSummary"),
+                        prioritizedSectors = extractList("prioritizedSectors"),
+                        missingOrStaleDisclosures = extractList("missingOrStaleDisclosures"),
+                        dataSourcesUsed = dataSourcesUsed,
+                        recommendedActions = extractList("recommendedActions"),
+                        requiresHumanApproval = true,
+                    )
+                )
+            } catch (e: Exception) {
+                Result.failure(IllegalArgumentException("Malformed AI JSON response: ${e.localizedMessage}"))
+            }
+        }
     }
 }

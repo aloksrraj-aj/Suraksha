@@ -5,30 +5,30 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddLocationAlt
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDownload
-import androidx.compose.material.icons.filled.CloudDone
-import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -46,368 +46,423 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.example.data.local.OfflineMapRegionEntity
 import com.example.data.local.SurakshaSettings
+import com.example.data.location.LocationFixState
+import com.example.data.map.IndiaPlace
+import com.example.data.map.OsmTileManager
+import com.example.data.map.RegionDownloadProgress
 import com.example.data.model.MapLayerConfig
+import com.example.data.model.OrgRole
+import com.example.data.model.PresenceSignal
 import com.example.data.model.RescueLocation
+import com.example.data.model.RescueRegistryEntry
 import com.example.data.model.RescueTeam
+import com.example.data.network.NetworkState
 import com.example.ui.components.DemoAndOfflineStatusBanner
 import com.example.ui.components.IndiaInteractiveMap
 import com.example.ui.components.InfoNoteBanner
 import com.example.ui.components.SeverityBadge
 import com.example.ui.components.VerificationBadge
-import com.example.ui.components.formatSurakshaTimestamp
-import com.example.ui.theme.CyanElectric
-import com.example.ui.theme.NavyDeep
-import com.example.ui.theme.NavyOutline
-import com.example.ui.theme.NavySurface
+import com.example.ui.theme.StatusCritical
 import com.example.ui.theme.StatusVerified
 import com.example.ui.viewmodel.DataUiState
+import java.util.Locale
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun LiveMapScreen(
     settings: SurakshaSettings,
+    networkState: NetworkState,
+    currentRole: OrgRole,
     locationsState: DataUiState<List<RescueLocation>>,
     teamsState: DataUiState<List<RescueTeam>>,
+    signalsState: DataUiState<List<PresenceSignal>>,
+    registryState: DataUiState<List<RescueRegistryEntry>>,
     layers: MapLayerConfig,
     offlineRegions: List<OfflineMapRegionEntity>,
+    downloadProgress: Map<String, RegionDownloadProgress>,
+    totalCachedTiles: Int,
+    totalCachedBytes: Long,
+    deviceLocation: LocationFixState,
+    tileManager: OsmTileManager,
+    searchResults: List<IndiaPlace>,
+    onSearchPlaces: (String) -> Unit,
+    onClearSearch: () -> Unit,
     onUpdateLayers: ((MapLayerConfig) -> MapLayerConfig) -> Unit,
     onToggleOfflineMode: (Boolean) -> Unit,
-    onToggleRegionDownload: (String, Boolean) -> Unit,
-    onRegisterLocation: (
-        name: String,
-        region: String,
-        hazardType: String,
-        severity: String,
-        lat: Double,
-        lon: Double,
-        verificationStatus: String,
-        dataSource: String,
-    ) -> Unit,
+    onStartRegionDownload: (OfflineMapRegionEntity) -> Unit,
+    onCancelRegionDownload: (String) -> Unit,
+    onDeleteRegionCache: (String) -> Unit,
+    onRegisterLocation: (String, String, String, String, Double, Double, String, String) -> Unit,
 ) {
     val locations = (locationsState as? DataUiState.Success)?.data.orEmpty()
     val teams = (teamsState as? DataUiState.Success)?.data.orEmpty()
+    val signals = (signalsState as? DataUiState.Success)?.data.orEmpty()
+    val registry = (registryState as? DataUiState.Success)?.data.orEmpty()
+
     var selectedLocation by remember { mutableStateOf<RescueLocation?>(null) }
     var showAddDialog by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+    var focusLat by remember { mutableStateOf<Double?>(null) }
+    var focusLon by remember { mutableStateOf<Double?>(null) }
+    var focusZoom by remember { mutableStateOf<Float?>(null) }
 
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        item {
+        Column(
+            modifier = Modifier.widthIn(max = 960.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
             DemoAndOfflineStatusBanner(
                 isDemoMode = settings.demoModeEnabled,
                 isOfflineMode = settings.offlineMapMode,
+                networkState = networkState,
+                languageCode = settings.languageCode,
             )
-        }
 
-        item {
+            // Search bar (City, District, State, or "lat, lon")
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("Interactive India Rescue Map", style = MaterialTheme.typography.headlineSmall)
-                    Text(
-                        text = "Uncropped J&K & Ladakh • LoC/LAC distinguished • Open-source layers",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    label = { Text("Search city, state, or lat, lon") },
+                    singleLine = true,
+                    trailingIcon = {
+                        if (searchQuery.isNotBlank()) {
+                            IconButton(onClick = {
+                                searchQuery = ""
+                                onClearSearch()
+                            }) {
+                                Icon(Icons.Filled.Close, contentDescription = "Clear search")
+                            }
+                        }
+                    },
+                    modifier = Modifier.weight(1f).testTag("map_search_input"),
+                )
                 Button(
-                    onClick = { showAddDialog = true },
-                    colors = ButtonDefaults.buttonColors(containerColor = CyanElectric, contentColor = NavyDeep),
-                    modifier = Modifier.testTag("add_disaster_site_button"),
+                    onClick = { onSearchPlaces(searchQuery) },
+                    modifier = Modifier.height(52.dp).testTag("map_search_button"),
                 ) {
-                    Icon(Icons.Filled.AddLocationAlt, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Add Site")
+                    Icon(Icons.Filled.Search, contentDescription = "Search map location")
                 }
             }
-        }
 
-        // Interactive Map Canvas
-        item {
+            if (searchResults.isNotEmpty()) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    searchResults.take(5).forEach { place ->
+                        FilterChip(
+                            selected = focusLat == place.latitude && focusLon == place.longitude,
+                            onClick = {
+                                focusLat = place.latitude
+                                focusLon = place.longitude
+                                focusZoom = 9.5f
+                            },
+                            label = { Text("${place.name} (${place.stateOrUt})") },
+                        )
+                    }
+                }
+            }
+
+            // Toggleable Map Layers
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                FilterChip(
+                    selected = layers.showRoads && !layers.showTerrain,
+                    onClick = { onUpdateLayers { it.copy(showRoads = true, showTerrain = false) } },
+                    label = { Text("OSM Street") },
+                )
+                FilterChip(
+                    selected = layers.showTerrain,
+                    onClick = { onUpdateLayers { it.copy(showTerrain = !it.showTerrain) } },
+                    label = { Text("OpenTopo Terrain") },
+                )
+                FilterChip(
+                    selected = layers.showDisasterSites,
+                    onClick = { onUpdateLayers { it.copy(showDisasterSites = !it.showDisasterSites) } },
+                    label = { Text("Sites") },
+                )
+                FilterChip(
+                    selected = layers.showTeams,
+                    onClick = { onUpdateLayers { it.copy(showTeams = !it.showTeams) } },
+                    label = { Text("Teams") },
+                )
+                FilterChip(
+                    selected = layers.showPresenceEstimates,
+                    onClick = { onUpdateLayers { it.copy(showPresenceEstimates = !it.showPresenceEstimates) } },
+                    label = { Text("Presence Est.") },
+                )
+                FilterChip(
+                    selected = layers.showVerifiedSurvivors,
+                    onClick = { onUpdateLayers { it.copy(showVerifiedSurvivors = !it.showVerifiedSurvivors) } },
+                    label = { Text("Survivors") },
+                )
+                FilterChip(
+                    selected = layers.showMissingPersons,
+                    onClick = { onUpdateLayers { it.copy(showMissingPersons = !it.showMissingPersons) } },
+                    label = { Text("Missing") },
+                )
+                FilterChip(
+                    selected = layers.showBoundaryReference,
+                    onClick = { onUpdateLayers { it.copy(showBoundaryReference = !it.showBoundaryReference) } },
+                    label = { Text("India Ref Lines") },
+                )
+            }
+
+            if (networkState == NetworkState.OFFLINE && totalCachedTiles == 0) {
+                InfoNoteBanner(
+                    text = "Device offline and no raster tiles are downloaded locally yet. Cached vector India boundaries remain available.",
+                    accentColor = StatusCritical,
+                )
+            }
+
             IndiaInteractiveMap(
                 locations = locations,
                 teams = teams,
+                signals = signals,
+                registry = registry,
                 layers = layers,
                 isOfflineMode = settings.offlineMapMode,
+                networkState = networkState,
+                deviceLocation = deviceLocation,
+                tileManager = tileManager,
+                focusLat = focusLat,
+                focusLon = focusLon,
+                focusZoom = focusZoom,
                 interactive = true,
                 selectedLocationId = selectedLocation?.id,
                 onLocationSelected = { selectedLocation = it },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(360.dp),
+                    .height(370.dp)
+                    .testTag("live_map_canvas"),
             )
-        }
 
-        if (selectedLocation != null) {
-            val loc = selectedLocation!!
-            item {
+            // Selected Disaster Site Details + Add Site
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Disaster Sites (${locations.size})", style = MaterialTheme.typography.titleMedium)
+                if (currentRole.canWriteOperations()) {
+                    Button(
+                        onClick = { showAddDialog = true },
+                        modifier = Modifier.testTag("add_disaster_site_button"),
+                    ) {
+                        Icon(Icons.Filled.AddLocationAlt, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Text("Log Site", modifier = Modifier.padding(start = 6.dp))
+                    }
+                }
+            }
+
+            selectedLocation?.let { loc ->
                 Card(
-                    colors = CardDefaults.cardColors(containerColor = NavySurface),
-                    border = BorderStroke(1.dp, CyanElectric),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary),
                     shape = RoundedCornerShape(14.dp),
                 ) {
-                    Column(
-                        modifier = Modifier.padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(loc.name, style = MaterialTheme.typography.titleMedium)
+                            Text(loc.name, style = MaterialTheme.typography.titleSmall)
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 SeverityBadge(loc.severity)
                                 VerificationBadge(loc.verificationStatus)
                             }
                         }
+                        Text("${loc.region} • Hazard: ${loc.hazardType} • Source: ${loc.dataSource}", style = MaterialTheme.typography.bodySmall)
+                        val distLabel = if (deviceLocation is LocationFixState.Available) {
+                            val km = OsmTileManager.haversineDistanceKm(deviceLocation.latitude, deviceLocation.longitude, loc.latitude, loc.longitude)
+                            String.format(Locale.US, " • %.2f km from current GPS", km)
+                        } else ""
                         Text(
-                            text = "${loc.region} • ${"%.4f".format(loc.latitude)}°N, ${"%.4f".format(loc.longitude)}°E",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = CyanElectric,
-                        )
-                        Text(
-                            text = "Hazard: ${loc.hazardType} • Source: ${loc.dataSource} • ${formatSurakshaTimestamp(loc.updatedAt)}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            text = String.format(Locale.US, "%.4f°N, %.4f°E%s", loc.latitude, loc.longitude, distLabel),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
                         )
                     }
                 }
             }
-        }
 
-        // Map Layer Toggles
-        item {
+            // Real Offline Region Download & Storage Manager
             Card(
-                colors = CardDefaults.cardColors(containerColor = NavySurface),
-                border = BorderStroke(1.dp, NavyOutline),
-                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                shape = RoundedCornerShape(16.dp),
             ) {
-                Column(
-                    modifier = Modifier.padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Icon(Icons.Filled.Layers, contentDescription = null, tint = CyanElectric)
-                            Text("Map Layers & Offline Mode", style = MaterialTheme.typography.titleMedium)
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Offline OSM Region Cache", style = MaterialTheme.typography.titleMedium)
+                            val mbTotal = totalCachedBytes / (1024.0 * 1024.0)
+                            Text(
+                                text = String.format(Locale.US, "Stored locally: %d tiles (%.2f MB)", totalCachedTiles, mbTotal),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Offline", style = MaterialTheme.typography.labelMedium)
-                            Spacer(Modifier.width(6.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("Offline Mode", style = MaterialTheme.typography.labelMedium)
                             Switch(
                                 checked = settings.offlineMapMode,
                                 onCheckedChange = onToggleOfflineMode,
+                                modifier = Modifier.testTag("offline_map_mode_switch"),
                             )
                         }
                     }
 
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        LayerChip("Roads", layers.showRoads) {
-                            onUpdateLayers { it.copy(showRoads = !it.showRoads) }
-                        }
-                        LayerChip("Satellite / Terrain", layers.showSatelliteTerrain) {
-                            onUpdateLayers { it.copy(showSatelliteTerrain = !it.showSatelliteTerrain) }
-                        }
-                        LayerChip("Buildings", layers.showBuildings) {
-                            onUpdateLayers { it.copy(showBuildings = !it.showBuildings) }
-                        }
-                        LayerChip("Parks & Forests", layers.showGreenZones) {
-                            onUpdateLayers { it.copy(showGreenZones = !it.showGreenZones) }
-                        }
-                        LayerChip("Teams & Sites", layers.showTeamsAndSites) {
-                            onUpdateLayers { it.copy(showTeamsAndSites = !it.showTeamsAndSites) }
+                    offlineRegions.forEach { region ->
+                        val prog = downloadProgress[region.regionId]
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                            shape = RoundedCornerShape(12.dp),
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(region.title, style = MaterialTheme.typography.titleSmall)
+                                        Text(region.boundingBoxLabel, style = MaterialTheme.typography.labelSmall)
+                                        Text(
+                                            text = if (region.isDownloaded) {
+                                                String.format(
+                                                    Locale.US,
+                                                    "Downloaded • %d tiles • %.2f MB • %s",
+                                                    region.tilesStored,
+                                                    region.sizeMb,
+                                                    region.dataVersion,
+                                                )
+                                            } else if (region.tilesStored > 0) {
+                                                "Partial cache (${region.tilesStored} tiles) — Resume available"
+                                            } else {
+                                                "Not downloaded on device (0 bytes)"
+                                            },
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = if (region.isDownloaded) StatusVerified else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        if (prog?.isDownloading == true) {
+                                            OutlinedButton(onClick = { onCancelRegionDownload(region.regionId) }) {
+                                                Text("Cancel")
+                                            }
+                                        } else {
+                                            OutlinedButton(
+                                                onClick = { onStartRegionDownload(region) },
+                                                enabled = networkState != NetworkState.OFFLINE,
+                                                modifier = Modifier.testTag("download_region_${region.regionId}"),
+                                            ) {
+                                                Icon(Icons.Filled.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                Text(
+                                                    text = if (region.isDownloaded) "Refresh" else if (region.tilesStored > 0) "Resume" else "Download",
+                                                    modifier = Modifier.padding(start = 4.dp),
+                                                )
+                                            }
+                                        }
+                                        if (region.isDownloaded || region.tilesStored > 0) {
+                                            IconButton(
+                                                onClick = { onDeleteRegionCache(region.regionId) },
+                                                modifier = Modifier.size(44.dp).testTag("delete_region_${region.regionId}"),
+                                            ) {
+                                                Icon(Icons.Filled.Delete, contentDescription = "Delete cached region", tint = StatusCritical)
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if (prog != null && (prog.isDownloading || prog.errorMessage != null)) {
+                                    if (prog.totalTiles > 0) {
+                                        LinearProgressIndicator(
+                                            progress = { prog.completedTiles.toFloat() / prog.totalTiles.toFloat() },
+                                            modifier = Modifier.fillMaxWidth(),
+                                        )
+                                        Text(
+                                            text = "Tiles ${prog.completedTiles}/${prog.totalTiles} (${prog.downloadedBytes / 1024L} KB)",
+                                            style = MaterialTheme.typography.labelSmall,
+                                        )
+                                    }
+                                    prog.errorMessage?.let { err ->
+                                        Text(err, style = MaterialTheme.typography.labelSmall, color = StatusCritical)
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
-        }
-
-        // Offline Regional Vector Cache Packs (SQLite Room)
-        item {
-            Text("Offline Regional Map Packs (SQLite Cache)", style = MaterialTheme.typography.titleMedium)
-        }
-
-        items(offlineRegions, key = { it.regionId }) { region ->
-            Card(
-                colors = CardDefaults.cardColors(containerColor = NavySurface),
-                border = BorderStroke(1.dp, NavyOutline),
-                shape = RoundedCornerShape(12.dp),
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Text(region.title, style = MaterialTheme.typography.titleSmall)
-                        Text(
-                            text = "${region.boundingBoxLabel} • ${region.sizeMb} MB • ${region.tileCount} vector tiles",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = CyanElectric,
-                        )
-                        Text(
-                            text = region.attribution,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    OutlinedButton(
-                        onClick = { onToggleRegionDownload(region.regionId, !region.isDownloaded) },
-                    ) {
-                        Icon(
-                            imageVector = if (region.isDownloaded) Icons.Filled.CloudDone else Icons.Filled.CloudDownload,
-                            contentDescription = null,
-                            tint = if (region.isDownloaded) StatusVerified else CyanElectric,
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text(if (region.isDownloaded) "Cached" else "Cache")
-                    }
-                }
-            }
-        }
-
-        item {
-            InfoNoteBanner(
-                text = "Geographical Attribution: Uses open-source OpenStreetMap (ODbL) & Survey of India reference boundaries. Disputed control lines (LoC/LAC) are visually distinct and never cropped."
-            )
         }
     }
 
     if (showAddDialog) {
-        RegisterLocationDialog(
-            onDismiss = { showAddDialog = false },
-            onConfirm = { name, region, hazard, severity, lat, lon, verif, source ->
-                onRegisterLocation(name, region, hazard, severity, lat, lon, verif, source)
-                showAddDialog = false
+        var name by remember { mutableStateOf("") }
+        var region by remember { mutableStateOf("") }
+        var hazard by remember { mutableStateOf("landslide") }
+        var severity by remember { mutableStateOf("high") }
+        var latText by remember {
+            mutableStateOf((deviceLocation as? LocationFixState.Available)?.latitude?.toString() ?: "")
+        }
+        var lonText by remember {
+            mutableStateOf((deviceLocation as? LocationFixState.Available)?.longitude?.toString() ?: "")
+        }
+
+        AlertDialog(
+            onDismissRequest = { showAddDialog = false },
+            title = { Text("Register Disaster Location") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Site Name") }, singleLine = true)
+                    OutlinedTextField(value = region, onValueChange = { region = it }, label = { Text("District, State/UT") }, singleLine = true)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(value = latText, onValueChange = { latText = it }, label = { Text("Latitude") }, singleLine = true, modifier = Modifier.weight(1f))
+                        OutlinedTextField(value = lonText, onValueChange = { lonText = it }, label = { Text("Longitude") }, singleLine = true, modifier = Modifier.weight(1f))
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf("landslide", "flood", "earthquake", "structural_collapse").forEach { h ->
+                            FilterChip(selected = hazard == h, onClick = { hazard = h }, label = { Text(h.take(7)) })
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf("critical", "high", "moderate").forEach { s ->
+                            FilterChip(selected = severity == s, onClick = { severity = s }, label = { Text(s) })
+                        }
+                    }
+                }
             },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val lat = latText.toDoubleOrNull()
+                        val lon = lonText.toDoubleOrNull()
+                        if (name.isNotBlank() && region.isNotBlank() && lat != null && lon != null && lat in -90.0..90.0 && lon in -180.0..180.0) {
+                            onRegisterLocation(name, region, hazard, severity, lat, lon, "unverified", "Field Operator Entry")
+                            showAddDialog = false
+                        }
+                    }
+                ) { Text("Save") }
+            },
+            dismissButton = { TextButton(onClick = { showAddDialog = false }) { Text("Cancel") } },
         )
     }
-}
-
-@Composable
-private fun LayerChip(label: String, selected: Boolean, onClick: () -> Unit) {
-    FilterChip(
-        selected = selected,
-        onClick = onClick,
-        label = { Text(label, style = MaterialTheme.typography.labelMedium) },
-        colors = FilterChipDefaults.filterChipColors(
-            selectedContainerColor = CyanElectric.copy(alpha = 0.2f),
-            selectedLabelColor = CyanElectric,
-        ),
-    )
-}
-
-@Composable
-private fun RegisterLocationDialog(
-    onDismiss: () -> Unit,
-    onConfirm: (String, String, String, String, Double, Double, String, String) -> Unit,
-) {
-    var name by remember { mutableStateOf("") }
-    var region by remember { mutableStateOf("Uttarakhand") }
-    var latStr by remember { mutableStateOf("30.3165") }
-    var lonStr by remember { mutableStateOf("78.0322") }
-    var hazard by remember { mutableStateOf("landslide") }
-    var severity by remember { mutableStateOf("high") }
-    var verification by remember { mutableStateOf("unverified") }
-    var source by remember { mutableStateOf("Field Dispatch Report") }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Register Disaster Location") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Site Name") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = region,
-                    onValueChange = { region = it },
-                    label = { Text("State / District") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = latStr,
-                        onValueChange = { latStr = it },
-                        label = { Text("Lat (°N)") },
-                        singleLine = true,
-                        modifier = Modifier.weight(1f),
-                    )
-                    OutlinedTextField(
-                        value = lonStr,
-                        onValueChange = { lonStr = it },
-                        label = { Text("Lon (°E)") },
-                        singleLine = true,
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf("landslide", "flood", "earthquake").forEach { option ->
-                        FilterChip(
-                            selected = hazard == option,
-                            onClick = { hazard = option },
-                            label = { Text(option, style = MaterialTheme.typography.labelSmall) },
-                        )
-                    }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf("critical", "high", "moderate").forEach { option ->
-                        FilterChip(
-                            selected = severity == option,
-                            onClick = { severity = option },
-                            label = { Text(option, style = MaterialTheme.typography.labelSmall) },
-                        )
-                    }
-                }
-                OutlinedTextField(
-                    value = source,
-                    onValueChange = { source = it },
-                    label = { Text("Information Source") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    val lat = latStr.toDoubleOrNull()?.coerceIn(-90.0, 90.0) ?: 30.3165
-                    val lon = lonStr.toDoubleOrNull()?.coerceIn(-180.0, 180.0) ?: 78.0322
-                    if (name.isNotBlank()) {
-                        onConfirm(name, region, hazard, severity, lat, lon, verification, source)
-                    }
-                },
-                enabled = name.isNotBlank(),
-            ) {
-                Text("Save Site")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
-        },
-    )
 }
