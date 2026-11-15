@@ -1,0 +1,146 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated rescue responder profile and voluntary location-sharing preference.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Firebase Auth UID of the responder." },
+        "displayName": { "type": "string", "description": "Responder display name." },
+        "callsign": { "type": "string", "description": "Operational callsign." },
+        "teamId": { "type": "string", "description": "Assigned team identifier." },
+        "teamName": { "type": "string", "description": "Assigned team name." },
+        "role": { "type": "string", "enum": ["coordinator", "medic", "scout", "engineer"] },
+        "locationSharingEnabled": { "type": "boolean", "description": "Explicit voluntary location sharing consent." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp on creation." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp on update." }
+      },
+      "required": ["userId", "displayName", "callsign", "teamId", "teamName", "role", "locationSharingEnabled", "createdAt", "updatedAt"]
+    },
+    "RescueTeam": {
+      "title": "RescueTeam",
+      "description": "Registered disaster rescue team unit with status, battery, and voluntary coordinates.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "teamCode": { "type": "string" },
+        "teamName": { "type": "string" },
+        "memberCount": { "type": "integer" },
+        "activeCount": { "type": "integer" },
+        "status": { "type": "string", "enum": ["active", "deployed", "standby", "offline"] },
+        "locationSharingOptIn": { "type": "boolean" },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "batteryPercent": { "type": "integer" },
+        "connectionStatus": { "type": "string", "enum": ["online", "mesh_offline", "low_bandwidth"] },
+        "isSynthetic": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "teamCode", "teamName", "memberCount", "activeCount", "status", "locationSharingOptIn", "latitude", "longitude", "batteryPercent", "connectionStatus", "isSynthetic", "createdAt", "updatedAt"]
+    },
+    "RescueLocation": {
+      "title": "RescueLocation",
+      "description": "Registered disaster-affected site with verification state and hazard classification.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "name": { "type": "string" },
+        "region": { "type": "string" },
+        "hazardType": { "type": "string", "enum": ["earthquake", "flood", "landslide", "structural_collapse", "other"] },
+        "severity": { "type": "string", "enum": ["critical", "high", "moderate", "low"] },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "verificationStatus": { "type": "string", "enum": ["verified", "estimated", "unverified", "outdated"] },
+        "dataSource": { "type": "string" },
+        "isSynthetic": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "name", "region", "hazardType", "severity", "latitude", "longitude", "verificationStatus", "dataSource", "isSynthetic", "createdAt", "updatedAt"]
+    },
+    "PresenceSignal": {
+      "title": "PresenceSignal",
+      "description": "Possible human-presence sensor observation with confidence and verification status.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "locationId": { "type": "string" },
+        "sectorLabel": { "type": "string" },
+        "signalType": { "type": "string", "enum": ["thermal_ir", "radar_respiration", "acoustic_vibration", "co2_plume"] },
+        "estimatedMinCount": { "type": "integer" },
+        "estimatedMaxCount": { "type": "integer" },
+        "confidencePercent": { "type": "integer" },
+        "verificationStatus": { "type": "string", "enum": ["estimated", "unverified", "verified", "outdated"] },
+        "dataSource": { "type": "string" },
+        "isSynthetic": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "locationId", "sectorLabel", "signalType", "estimatedMinCount", "estimatedMaxCount", "confidencePercent", "verificationStatus", "dataSource", "isSynthetic", "createdAt", "updatedAt"]
+    },
+    "RescueRegistryEntry": {
+      "title": "RescueRegistryEntry",
+      "description": "Rescue registry record for missing persons, verified survivors, medical requests, and site updates.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "category": { "type": "string", "enum": ["missing_person", "verified_survivor", "medical_request", "disaster_site"] },
+        "title": { "type": "string" },
+        "locationName": { "type": "string" },
+        "details": { "type": "string" },
+        "sensitiveContactMasked": { "type": "string" },
+        "rescueStatus": { "type": "string", "enum": ["open", "dispatched", "in_progress", "resolved"] },
+        "verificationStatus": { "type": "string", "enum": ["verified", "estimated", "unverified", "outdated"] },
+        "informationSource": { "type": "string" },
+        "verificationNotes": { "type": "string" },
+        "isSynthetic": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "category", "title", "locationName", "details", "sensitiveContactMasked", "rescueStatus", "verificationStatus", "informationSource", "verificationNotes", "isSynthetic", "createdAt", "updatedAt"]
+    },
+    "TeamAlert": {
+      "title": "TeamAlert",
+      "description": "Emergency team communication dispatch log.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "teamCode": { "type": "string" },
+        "priority": { "type": "string", "enum": ["sos", "urgent", "routine"] },
+        "message": { "type": "string" },
+        "channel": { "type": "string", "enum": ["mesh_radio", "satellite", "cellular"] },
+        "isSynthetic": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "teamCode", "priority", "message", "channel", "isSynthetic", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Authenticated responder profile."
+    },
+    "/users/{userId}/rescue_teams/{teamId}": {
+      "schema": { "$ref": "#/entities/RescueTeam" },
+      "description": "Rescue team units managed by the responder."
+    },
+    "/users/{userId}/rescue_locations/{locationId}": {
+      "schema": { "$ref": "#/entities/RescueLocation" },
+      "description": "Registered disaster locations."
+    },
+    "/users/{userId}/presence_signals/{signalId}": {
+      "schema": { "$ref": "#/entities/PresenceSignal" },
+      "description": "Possible human-presence sensor observations."
+    },
+    "/users/{userId}/rescue_registry/{entryId}": {
+      "schema": { "$ref": "#/entities/RescueRegistryEntry" },
+      "description": "Rescue registry entries with verification audit trail."
+    },
+    "/users/{userId}/team_alerts/{alertId}": {
+      "schema": { "$ref": "#/entities/TeamAlert" },
+      "description": "Emergency communication messages."
+    }
+  }
+}

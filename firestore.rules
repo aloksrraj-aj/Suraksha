@@ -1,0 +1,221 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidTimestamp(ts) {
+      return ts is timestamp && ts <= request.time;
+    }
+
+    function isValidUserProfile(data, userId) {
+      return data.userId == userId &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
+        data.callsign is string && data.callsign.size() >= 1 && data.callsign.size() <= 30 &&
+        data.teamId is string && data.teamId.size() >= 1 && data.teamId.size() <= 64 &&
+        data.teamName is string && data.teamName.size() >= 1 && data.teamName.size() <= 80 &&
+        data.role in ['coordinator', 'medic', 'scout', 'engineer'] &&
+        data.locationSharingEnabled is bool;
+    }
+
+    function isValidRescueTeam(data, userId) {
+      return data.userId == userId &&
+        data.teamCode is string && data.teamCode.size() >= 1 && data.teamCode.size() <= 32 &&
+        data.teamName is string && data.teamName.size() >= 1 && data.teamName.size() <= 80 &&
+        data.memberCount is int && data.memberCount >= 1 && data.memberCount <= 200 &&
+        data.activeCount is int && data.activeCount >= 0 && data.activeCount <= data.memberCount &&
+        data.status in ['active', 'deployed', 'standby', 'offline'] &&
+        data.locationSharingOptIn is bool &&
+        data.latitude is number && data.latitude >= -90 && data.latitude <= 90 &&
+        data.longitude is number && data.longitude >= -180 && data.longitude <= 180 &&
+        data.batteryPercent is int && data.batteryPercent >= 0 && data.batteryPercent <= 100 &&
+        data.connectionStatus in ['online', 'mesh_offline', 'low_bandwidth'] &&
+        data.isSynthetic is bool;
+    }
+
+    function isValidRescueLocation(data, userId) {
+      return data.userId == userId &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+        data.region is string && data.region.size() >= 1 && data.region.size() <= 80 &&
+        data.hazardType in ['earthquake', 'flood', 'landslide', 'structural_collapse', 'other'] &&
+        data.severity in ['critical', 'high', 'moderate', 'low'] &&
+        data.latitude is number && data.latitude >= -90 && data.latitude <= 90 &&
+        data.longitude is number && data.longitude >= -180 && data.longitude <= 180 &&
+        data.verificationStatus in ['verified', 'estimated', 'unverified', 'outdated'] &&
+        data.dataSource is string && data.dataSource.size() >= 1 && data.dataSource.size() <= 100 &&
+        data.isSynthetic is bool;
+    }
+
+    function isValidPresenceSignal(data, userId) {
+      return data.userId == userId &&
+        data.locationId is string && data.locationId.size() >= 1 && data.locationId.size() <= 128 &&
+        data.sectorLabel is string && data.sectorLabel.size() >= 1 && data.sectorLabel.size() <= 80 &&
+        data.signalType in ['thermal_ir', 'radar_respiration', 'acoustic_vibration', 'co2_plume'] &&
+        data.estimatedMinCount is int && data.estimatedMinCount >= 0 && data.estimatedMinCount <= 500 &&
+        data.estimatedMaxCount is int && data.estimatedMaxCount >= data.estimatedMinCount && data.estimatedMaxCount <= 500 &&
+        data.confidencePercent is int && data.confidencePercent >= 0 && data.confidencePercent <= 100 &&
+        data.verificationStatus in ['estimated', 'unverified', 'verified', 'outdated'] &&
+        data.dataSource is string && data.dataSource.size() >= 1 && data.dataSource.size() <= 100 &&
+        data.isSynthetic is bool;
+    }
+
+    function isValidRescueRegistryEntry(data, userId) {
+      return data.userId == userId &&
+        data.category in ['missing_person', 'verified_survivor', 'medical_request', 'disaster_site'] &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 100 &&
+        data.locationName is string && data.locationName.size() >= 1 && data.locationName.size() <= 100 &&
+        data.details is string && data.details.size() >= 1 && data.details.size() <= 500 &&
+        data.sensitiveContactMasked is string && data.sensitiveContactMasked.size() <= 100 &&
+        data.rescueStatus in ['open', 'dispatched', 'in_progress', 'resolved'] &&
+        data.verificationStatus in ['verified', 'estimated', 'unverified', 'outdated'] &&
+        data.informationSource is string && data.informationSource.size() >= 1 && data.informationSource.size() <= 100 &&
+        data.verificationNotes is string && data.verificationNotes.size() <= 300 &&
+        data.isSynthetic is bool;
+    }
+
+    function isValidTeamAlert(data, userId) {
+      return data.userId == userId &&
+        data.teamCode is string && data.teamCode.size() >= 1 && data.teamCode.size() <= 32 &&
+        data.priority in ['sos', 'urgent', 'routine'] &&
+        data.message is string && data.message.size() >= 1 && data.message.size() <= 400 &&
+        data.channel in ['mesh_radio', 'satellite', 'cellular'] &&
+        data.isSynthetic is bool;
+    }
+
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow list: if isOwner(userId);
+      allow create: if isOwner(userId) &&
+                       isValidId(userId) &&
+                       incoming().keys().hasAll(['userId', 'displayName', 'callsign', 'teamId', 'teamName', 'role', 'locationSharingEnabled', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['userId', 'displayName', 'callsign', 'teamId', 'teamName', 'role', 'locationSharingEnabled', 'createdAt', 'updatedAt']) &&
+                       isValidTimestamp(incoming().createdAt) &&
+                       isValidTimestamp(incoming().updatedAt) &&
+                       isValidUserProfile(incoming(), userId);
+      allow update: if isOwner(userId) &&
+                       isValidId(userId) &&
+                       isValidUserProfile(incoming(), userId) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       isValidTimestamp(incoming().updatedAt) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'callsign', 'teamId', 'teamName', 'role', 'locationSharingEnabled', 'updatedAt']);
+      allow delete: if isOwner(userId) && isValidId(userId);
+
+      match /rescue_teams/{teamId} {
+        allow get: if isOwner(userId) && isValidId(teamId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) &&
+                         isValidId(teamId) &&
+                         incoming().keys().hasAll(['userId', 'teamCode', 'teamName', 'memberCount', 'activeCount', 'status', 'locationSharingOptIn', 'latitude', 'longitude', 'batteryPercent', 'connectionStatus', 'isSynthetic', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'teamCode', 'teamName', 'memberCount', 'activeCount', 'status', 'locationSharingOptIn', 'latitude', 'longitude', 'batteryPercent', 'connectionStatus', 'isSynthetic', 'createdAt', 'updatedAt']) &&
+                         isValidTimestamp(incoming().createdAt) &&
+                         isValidTimestamp(incoming().updatedAt) &&
+                         isValidRescueTeam(incoming(), userId);
+        allow update: if isOwner(userId) &&
+                         isValidId(teamId) &&
+                         isValidRescueTeam(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidTimestamp(incoming().updatedAt) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['teamCode', 'teamName', 'memberCount', 'activeCount', 'status', 'locationSharingOptIn', 'latitude', 'longitude', 'batteryPercent', 'connectionStatus', 'isSynthetic', 'updatedAt']);
+        allow delete: if isOwner(userId) && isValidId(teamId);
+      }
+
+      match /rescue_locations/{locationId} {
+        allow get: if isOwner(userId) && isValidId(locationId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) &&
+                         isValidId(locationId) &&
+                         incoming().keys().hasAll(['userId', 'name', 'region', 'hazardType', 'severity', 'latitude', 'longitude', 'verificationStatus', 'dataSource', 'isSynthetic', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'name', 'region', 'hazardType', 'severity', 'latitude', 'longitude', 'verificationStatus', 'dataSource', 'isSynthetic', 'createdAt', 'updatedAt']) &&
+                         isValidTimestamp(incoming().createdAt) &&
+                         isValidTimestamp(incoming().updatedAt) &&
+                         isValidRescueLocation(incoming(), userId);
+        allow update: if isOwner(userId) &&
+                         isValidId(locationId) &&
+                         isValidRescueLocation(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidTimestamp(incoming().updatedAt) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['name', 'region', 'hazardType', 'severity', 'latitude', 'longitude', 'verificationStatus', 'dataSource', 'isSynthetic', 'updatedAt']);
+        allow delete: if isOwner(userId) && isValidId(locationId);
+      }
+
+      match /presence_signals/{signalId} {
+        allow get: if isOwner(userId) && isValidId(signalId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) &&
+                         isValidId(signalId) &&
+                         incoming().keys().hasAll(['userId', 'locationId', 'sectorLabel', 'signalType', 'estimatedMinCount', 'estimatedMaxCount', 'confidencePercent', 'verificationStatus', 'dataSource', 'isSynthetic', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'locationId', 'sectorLabel', 'signalType', 'estimatedMinCount', 'estimatedMaxCount', 'confidencePercent', 'verificationStatus', 'dataSource', 'isSynthetic', 'createdAt', 'updatedAt']) &&
+                         isValidTimestamp(incoming().createdAt) &&
+                         isValidTimestamp(incoming().updatedAt) &&
+                         isValidPresenceSignal(incoming(), userId);
+        allow update: if isOwner(userId) &&
+                         isValidId(signalId) &&
+                         isValidPresenceSignal(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidTimestamp(incoming().updatedAt) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['verificationStatus', 'confidencePercent', 'dataSource', 'updatedAt']);
+        allow delete: if isOwner(userId) && isValidId(signalId);
+      }
+
+      match /rescue_registry/{entryId} {
+        allow get: if isOwner(userId) && isValidId(entryId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) &&
+                         isValidId(entryId) &&
+                         incoming().keys().hasAll(['userId', 'category', 'title', 'locationName', 'details', 'sensitiveContactMasked', 'rescueStatus', 'verificationStatus', 'informationSource', 'verificationNotes', 'isSynthetic', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'category', 'title', 'locationName', 'details', 'sensitiveContactMasked', 'rescueStatus', 'verificationStatus', 'informationSource', 'verificationNotes', 'isSynthetic', 'createdAt', 'updatedAt']) &&
+                         isValidTimestamp(incoming().createdAt) &&
+                         isValidTimestamp(incoming().updatedAt) &&
+                         isValidRescueRegistryEntry(incoming(), userId);
+        allow update: if isOwner(userId) &&
+                         isValidId(entryId) &&
+                         isValidRescueRegistryEntry(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidTimestamp(incoming().updatedAt) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['category', 'title', 'locationName', 'details', 'sensitiveContactMasked', 'rescueStatus', 'verificationStatus', 'informationSource', 'verificationNotes', 'isSynthetic', 'updatedAt']);
+        allow delete: if isOwner(userId) && isValidId(entryId);
+      }
+
+      match /team_alerts/{alertId} {
+        allow get: if isOwner(userId) && isValidId(alertId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) &&
+                         isValidId(alertId) &&
+                         incoming().keys().hasAll(['userId', 'teamCode', 'priority', 'message', 'channel', 'isSynthetic', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'teamCode', 'priority', 'message', 'channel', 'isSynthetic', 'createdAt', 'updatedAt']) &&
+                         isValidTimestamp(incoming().createdAt) &&
+                         isValidTimestamp(incoming().updatedAt) &&
+                         isValidTeamAlert(incoming(), userId);
+        allow update: if false;
+        allow delete: if isOwner(userId) && isValidId(alertId);
+      }
+    }
+  }
+}
