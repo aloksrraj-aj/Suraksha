@@ -71,7 +71,7 @@ data class SyncHistoryEntity(
     val operationId: String,
     val orgId: String,
     val entityType: String,
-    val outcome: String, // "synced", "failed", "dead_letter"
+    val outcome: String,
     val detail: String,
     val syncedAtMillis: Long,
 )
@@ -85,35 +85,64 @@ data class JoinedOrgEntity(
     val lastAccessedMillis: Long,
 )
 
-@Entity(tableName = "slam_sessions")
-data class SlamSessionEntity(
-    @PrimaryKey val sessionId: String,
+@Entity(tableName = "cached_member_locations")
+data class CachedMemberLocationEntity(
+    @PrimaryKey val cacheKey: String, // "$missionId:$userId"
     val orgId: String,
-    val scenario: String,
-    val sweepProgress: Float,
-    val gridSize: Int,
-    val cellSizeMeters: Float,
-    val obstacleCount: Int,
-    val voidCount: Int,
-    val thermalCount: Int,
-    val sourceKind: String,
-    val uncertaintyNote: String,
-    val exportedJson: String,
-    val createdAtMillis: Long,
+    val missionId: String,
+    val userId: String,
+    val displayName: String,
+    val callsign: String,
+    val role: String,
+    val sharingEnabled: Boolean,
+    val hasValidLocation: Boolean,
+    val latitude: Double,
+    val longitude: Double,
+    val accuracyMeters: Double,
+    val headingDegrees: Double,
+    val headingReliable: Boolean,
+    val batteryPercent: Long,
+    val connectionStatus: String,
+    val locationTimestampMillis: Long,
+    val unavailableReason: String,
+    val cachedAtMillis: Long,
 )
 
-@Entity(tableName = "cached_sensor_logs")
-data class CachedSensorLogEntity(
-    @PrimaryKey(autoGenerate = true) val id: Long = 0L,
-    val nodeId: String,
+@Entity(tableName = "cached_sensor_health")
+data class CachedSensorHealthEntity(
+    @PrimaryKey val sensorId: String,
+    val orgId: String,
+    val missionId: String,
     val sensorType: String,
-    val summary: String,
-    val confidencePercent: Int,
-    val isSynthetic: Boolean,
-    val capturedAtMillis: Long,
-    val sourceKind: String = "simulated",
-    val calibrationStatus: String = "nominal",
-    val sensorHealth: String = "healthy",
+    val displayName: String,
+    val connectionStatus: String,
+    val healthState: String,
+    val lastHeartbeatMillis: Long,
+    val packetsReceived: Long,
+    val packetsRejected: Long,
+    val diagnosticNote: String,
+    val cachedAtMillis: Long,
+)
+
+@Entity(tableName = "cached_sensor_events")
+data class CachedSensorEventEntity(
+    @PrimaryKey val eventId: String,
+    val orgId: String,
+    val missionId: String,
+    val sensorId: String,
+    val sensorType: String,
+    val timestampUtcMillis: Long,
+    val detectionType: String,
+    val estimatedRangeMeters: Double?,
+    val estimatedAzimuthDegrees: Double?,
+    val estimatedLatitude: Double?,
+    val estimatedLongitude: Double?,
+    val confidence: Double,
+    val signalQuality: String,
+    val sourceDevice: String,
+    val dataValidity: String,
+    val status: String,
+    val cachedAtMillis: Long,
 )
 
 @Dao
@@ -121,14 +150,8 @@ interface SurakshaLocalDao {
     @Query("SELECT * FROM offline_map_regions ORDER BY title ASC")
     fun observeOfflineRegions(): Flow<List<OfflineMapRegionEntity>>
 
-    @Query("SELECT * FROM offline_map_regions WHERE regionId = :regionId LIMIT 1")
-    suspend fun getRegionById(regionId: String): OfflineMapRegionEntity?
-
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertRegionsIfMissing(regions: List<OfflineMapRegionEntity>)
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsertRegion(region: OfflineMapRegionEntity)
 
     @Query("UPDATE offline_map_regions SET isDownloaded = :downloaded, tilesStored = :tilesStored, bytesStored = :bytesStored, sizeMb = :sizeMb, lastSyncedMillis = :syncedAt, dataVersion = :dataVersion WHERE regionId = :regionId")
     suspend fun updateRegionCacheStats(
@@ -201,17 +224,26 @@ interface SurakshaLocalDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertJoinedOrganization(org: JoinedOrgEntity)
 
-    @Query("SELECT * FROM slam_sessions ORDER BY createdAtMillis DESC LIMIT 30")
-    fun observeSlamSessions(): Flow<List<SlamSessionEntity>>
+    @Query("SELECT * FROM cached_member_locations WHERE missionId = :missionId ORDER BY displayName ASC")
+    fun observeCachedMemberLocations(missionId: String): Flow<List<CachedMemberLocationEntity>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertSlamSession(session: SlamSessionEntity)
+    suspend fun upsertCachedMemberLocations(locations: List<CachedMemberLocationEntity>)
 
-    @Query("SELECT * FROM cached_sensor_logs ORDER BY capturedAtMillis DESC LIMIT 60")
-    fun observeRecentSensorLogs(): Flow<List<CachedSensorLogEntity>>
+    @Query("DELETE FROM cached_member_locations WHERE missionId = :missionId")
+    suspend fun clearCachedMemberLocations(missionId: String)
+
+    @Query("SELECT * FROM cached_sensor_health WHERE missionId = :missionId ORDER BY displayName ASC")
+    fun observeCachedSensorHealth(missionId: String): Flow<List<CachedSensorHealthEntity>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertSensorLog(log: CachedSensorLogEntity)
+    suspend fun upsertCachedSensorHealth(entries: List<CachedSensorHealthEntity>)
+
+    @Query("SELECT * FROM cached_sensor_events WHERE missionId = :missionId ORDER BY timestampUtcMillis DESC LIMIT 100")
+    fun observeCachedSensorEvents(missionId: String): Flow<List<CachedSensorEventEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertCachedSensorEvents(events: List<CachedSensorEventEntity>)
 }
 
 @Database(
@@ -221,10 +253,11 @@ interface SurakshaLocalDao {
         PendingSyncOperationEntity::class,
         SyncHistoryEntity::class,
         JoinedOrgEntity::class,
-        SlamSessionEntity::class,
-        CachedSensorLogEntity::class,
+        CachedMemberLocationEntity::class,
+        CachedSensorHealthEntity::class,
+        CachedSensorEventEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 abstract class SurakshaLocalDatabase : RoomDatabase() {
@@ -334,6 +367,79 @@ abstract class SurakshaLocalDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_3_4: Migration = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("DROP TABLE IF EXISTS slam_sessions")
+                db.execSQL("DROP TABLE IF EXISTS cached_sensor_logs")
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS cached_member_locations (
+                        cacheKey TEXT NOT NULL PRIMARY KEY,
+                        orgId TEXT NOT NULL,
+                        missionId TEXT NOT NULL,
+                        userId TEXT NOT NULL,
+                        displayName TEXT NOT NULL,
+                        callsign TEXT NOT NULL,
+                        role TEXT NOT NULL,
+                        sharingEnabled INTEGER NOT NULL,
+                        hasValidLocation INTEGER NOT NULL,
+                        latitude REAL NOT NULL,
+                        longitude REAL NOT NULL,
+                        accuracyMeters REAL NOT NULL,
+                        headingDegrees REAL NOT NULL,
+                        headingReliable INTEGER NOT NULL,
+                        batteryPercent INTEGER NOT NULL,
+                        connectionStatus TEXT NOT NULL,
+                        locationTimestampMillis INTEGER NOT NULL,
+                        unavailableReason TEXT NOT NULL,
+                        cachedAtMillis INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS cached_sensor_health (
+                        sensorId TEXT NOT NULL PRIMARY KEY,
+                        orgId TEXT NOT NULL,
+                        missionId TEXT NOT NULL,
+                        sensorType TEXT NOT NULL,
+                        displayName TEXT NOT NULL,
+                        connectionStatus TEXT NOT NULL,
+                        healthState TEXT NOT NULL,
+                        lastHeartbeatMillis INTEGER NOT NULL,
+                        packetsReceived INTEGER NOT NULL,
+                        packetsRejected INTEGER NOT NULL,
+                        diagnosticNote TEXT NOT NULL,
+                        cachedAtMillis INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS cached_sensor_events (
+                        eventId TEXT NOT NULL PRIMARY KEY,
+                        orgId TEXT NOT NULL,
+                        missionId TEXT NOT NULL,
+                        sensorId TEXT NOT NULL,
+                        sensorType TEXT NOT NULL,
+                        timestampUtcMillis INTEGER NOT NULL,
+                        detectionType TEXT NOT NULL,
+                        estimatedRangeMeters REAL,
+                        estimatedAzimuthDegrees REAL,
+                        estimatedLatitude REAL,
+                        estimatedLongitude REAL,
+                        confidence REAL NOT NULL,
+                        signalQuality TEXT NOT NULL,
+                        sourceDevice TEXT NOT NULL,
+                        dataValidity TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        cachedAtMillis INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         @Volatile
         private var instance: SurakshaLocalDatabase? = null
 
@@ -344,7 +450,7 @@ abstract class SurakshaLocalDatabase : RoomDatabase() {
                     SurakshaLocalDatabase::class.java,
                     "suraksha_offline_cache.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .build()
                     .also { instance = it }
             }
@@ -354,13 +460,36 @@ abstract class SurakshaLocalDatabase : RoomDatabase() {
 
 class OfflineCacheRepository(private val dao: SurakshaLocalDao) {
     val offlineRegions: Flow<List<OfflineMapRegionEntity>> = dao.observeOfflineRegions()
-    val recentSensorLogs: Flow<List<CachedSensorLogEntity>> = dao.observeRecentSensorLogs()
     val pendingSyncOperations: Flow<List<PendingSyncOperationEntity>> = dao.observePendingSyncOperations()
     val syncHistory: Flow<List<SyncHistoryEntity>> = dao.observeSyncHistory()
     val joinedOrganizations: Flow<List<JoinedOrgEntity>> = dao.observeJoinedOrganizations()
-    val slamSessions: Flow<List<SlamSessionEntity>> = dao.observeSlamSessions()
     val totalCachedTileCount: Flow<Int> = dao.observeTotalCachedTileCount()
     val totalCachedBytes: Flow<Long> = dao.observeTotalCachedBytes()
+
+    fun observeCachedMemberLocations(missionId: String): Flow<List<CachedMemberLocationEntity>> =
+        dao.observeCachedMemberLocations(missionId)
+
+    fun observeCachedSensorHealth(missionId: String): Flow<List<CachedSensorHealthEntity>> =
+        dao.observeCachedSensorHealth(missionId)
+
+    fun observeCachedSensorEvents(missionId: String): Flow<List<CachedSensorEventEntity>> =
+        dao.observeCachedSensorEvents(missionId)
+
+    suspend fun cacheMissionLocations(missionId: String, locations: List<CachedMemberLocationEntity>) {
+        if (missionId.isBlank()) return
+        dao.clearCachedMemberLocations(missionId)
+        if (locations.isNotEmpty()) {
+            dao.upsertCachedMemberLocations(locations)
+        }
+    }
+
+    suspend fun cacheSensorHealth(entries: List<CachedSensorHealthEntity>) {
+        if (entries.isNotEmpty()) dao.upsertCachedSensorHealth(entries)
+    }
+
+    suspend fun cacheSensorEvents(events: List<CachedSensorEventEntity>) {
+        if (events.isNotEmpty()) dao.upsertCachedSensorEvents(events)
+    }
 
     suspend fun ensureDefaultRegionsSeeded() {
         dao.insertRegionsIfMissing(
@@ -444,34 +573,5 @@ class OfflineCacheRepository(private val dao: SurakshaLocalDao) {
                 lastAccessedMillis = System.currentTimeMillis(),
             )
         )
-    }
-
-    suspend fun recordSensorSnapshot(
-        nodeId: String,
-        sensorType: String,
-        summary: String,
-        confidencePercent: Int,
-        isSynthetic: Boolean = true,
-        sourceKind: String = if (isSynthetic) "simulated" else "hardware",
-        calibrationStatus: String = "nominal",
-        sensorHealth: String = "healthy",
-    ) {
-        dao.insertSensorLog(
-            CachedSensorLogEntity(
-                nodeId = nodeId,
-                sensorType = sensorType,
-                summary = summary,
-                confidencePercent = confidencePercent,
-                isSynthetic = isSynthetic,
-                capturedAtMillis = System.currentTimeMillis(),
-                sourceKind = sourceKind,
-                calibrationStatus = calibrationStatus,
-                sensorHealth = sensorHealth,
-            )
-        )
-    }
-
-    suspend fun saveSlamSession(session: SlamSessionEntity) {
-        dao.insertSlamSession(session)
     }
 }

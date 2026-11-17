@@ -1,14 +1,13 @@
 <resources>
     <string name="app_name">Suraksha</string>
-    <string name="nav_overview">Overview</string>
-    <string name="nav_live_map">Live Map</string>
-    <string name="nav_env_map">Env Map</string>
-    <string name="nav_presence">Presence</string>
-    <string name="nav_teams">Teams</string>
-    <string name="nav_registry">Registry</string>
+    <string name="nav_missions">Missions</string>
+    <string name="nav_radar">Radar</string>
     <string name="nav_sensors">Sensors</string>
+    <string name="nav_team">Team</string>
     <string name="nav_settings">Settings</string>
-    <string name="banner_demo_mode">DEMO MODE • SYNTHETIC DATA</string>
+    <string name="banner_demo_mode">DEV DEMO MODE • TEST FIXTURES ONLY</string>
     <string name="banner_offline_cache">OFFLINE MODE • CACHED DATA</string>
-    <string name="sos_button_label">Raise SOS Incident</string>
+    <string name="no_live_sensor_data">NO LIVE SENSOR DATA — CONNECT A COMPATIBLE SENSOR</string>
+    <string name="unclassified_presence_label">UNCLASSIFIED POSSIBLE HUMAN PRESENCE</string>
+    <string name="sos_button_label">Send Emergency SOS</string>
 </resources>

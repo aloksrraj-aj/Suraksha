@@ -1,71 +1,73 @@
 package com.example.ui.viewmodel
 
 import android.content.Context
-import android.util.Log
+import android.os.BatteryManager
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.data.ai.SurakshaAiRepository
-import com.example.data.firebase.SurakshaMessagingService
-import com.example.data.hardware.BleGattSensorAdapter
-import com.example.data.hardware.EnvScenario
-import com.example.data.hardware.SectorFusionSummary
+import com.example.data.hardware.DevDemoFixtureProvider
+import com.example.data.hardware.GatewayTransportConfig
+import com.example.data.hardware.GatewayTransportKind
+import com.example.data.hardware.HttpTlsGatewayAdapter
+import com.example.data.hardware.MqttGatewayContract
 import com.example.data.hardware.SensorAdapterDescriptor
 import com.example.data.hardware.SensorArchitectureCatalog
-import com.example.data.hardware.SensorFusionProcessor
-import com.example.data.hardware.SlamEnvironmentFrame
-import com.example.data.hardware.SlamExportFormatter
-import com.example.data.hardware.SlamGatewayClient
-import com.example.data.hardware.WifiHttpGatewayAdapter
-import com.example.data.local.CachedSensorLogEntity
+import com.example.data.hardware.SensorEventV1Parser
+import com.example.data.hardware.WebSocketGatewayAdapter
+import com.example.data.local.CachedMemberLocationEntity
+import com.example.data.local.CachedSensorEventEntity
+import com.example.data.local.CachedSensorHealthEntity
 import com.example.data.local.JoinedOrgEntity
 import com.example.data.local.OfflineCacheRepository
 import com.example.data.local.OfflineMapRegionEntity
 import com.example.data.local.PendingSyncOperationEntity
-import com.example.data.local.SlamSessionEntity
+import com.example.data.local.SecureTokenStorage
 import com.example.data.local.SurakshaPreferences
 import com.example.data.local.SurakshaSettings
 import com.example.data.local.SyncHistoryEntity
+import com.example.data.location.CompassHeadingProvider
+import com.example.data.location.HeadingState
 import com.example.data.location.LocationFixState
-import com.example.data.location.SurakshaLocationBus
+import com.example.data.location.RadarGeoMath
+import com.example.data.location.SeparationAlertEvaluator
 import com.example.data.location.SurakshaLocationController
 import com.example.data.map.IndiaPlace
 import com.example.data.map.OsmTileManager
 import com.example.data.map.RegionDownloadProgress
-import com.example.data.map.RescueRoute
-import com.example.data.model.ActivityLogEntry
-import com.example.data.model.AiTriageReport
-import com.example.data.model.BlockedRoadMarker
-import com.example.data.model.DroneTelemetry
+import com.example.data.model.AuditLog
+import com.example.data.model.BlockedMembership
+import com.example.data.model.DetectionObservation
+import com.example.data.model.EnvironmentMode
+import com.example.data.model.GatewayDevice
+import com.example.data.model.Invitation
 import com.example.data.model.MapLayerConfig
-import com.example.data.model.NotificationDispatchRecord
-import com.example.data.model.OrgInvite
+import com.example.data.model.MemberLocation
+import com.example.data.model.Mission
+import com.example.data.model.MissionMember
+import com.example.data.model.MissionStatus
 import com.example.data.model.OrgMember
 import com.example.data.model.OrgRole
-import com.example.data.model.PresenceSignal
-import com.example.data.model.RescueLocation
-import com.example.data.model.RescueMission
+import com.example.data.model.RadarTarget
 import com.example.data.model.RescueOrganization
-import com.example.data.model.RescueRegistryEntry
 import com.example.data.model.RescueTeam
-import com.example.data.model.SosIncident
-import com.example.data.model.SosIncidentStatus
-import com.example.data.model.SyncStatus
+import com.example.data.model.SensorDevice
+import com.example.data.model.SensorEvent
+import com.example.data.model.SensorHealth
+import com.example.data.model.SeparationWarningItem
+import com.example.data.model.SosAlert
+import com.example.data.model.SosAlertStatus
 import com.example.data.model.UserProfile
 import com.example.data.network.NetworkMonitor
 import com.example.data.network.NetworkState
 import com.example.data.repository.SurakshaRepository
+import com.example.data.repository.UiState
 import com.example.data.sync.OfflineSyncManager
 import com.example.data.sync.SyncOperationExecutor
-import com.google.firebase.firestore.FirebaseFirestoreException
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
@@ -73,50 +75,6 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import org.json.JSONObject
-import java.util.Locale
-import java.util.UUID
-
-sealed interface DataUiState<out T> {
-    data object Loading : DataUiState<Nothing>
-    data class Success<T>(val data: T) : DataUiState<T>
-    data class Error(val message: String) : DataUiState<Nothing>
-}
-
-sealed interface AiTriageUiState {
-    data object Idle : AiTriageUiState
-    data object Loading : AiTriageUiState
-    data class Success(val report: AiTriageReport) : AiTriageUiState
-    data class Error(val message: String) : AiTriageUiState
-}
-
-data class DashboardFilterState(
-    val hazardFilter: String = "all",
-    val teamFilter: String = "all",
-    val timeWindowHours: Int = 0, // 0 = All time, 24 = 24h, 72 = 72h
-    val searchQuery: String = "",
-)
-
-data class OperationalAnalytics(
-    val activeIncidentsCount: Int = 0,
-    val unacknowledgedSosCount: Int = 0,
-    val avgAckLatencyMinutes: Double? = null,
-    val disasterLocationsCount: Int = 0,
-    val verifiedRegistryCount: Int = 0,
-    val verifiedSurvivorCount: Int = 0,
-    val missingPersonsCount: Int = 0,
-    val medicalRequestsCount: Int = 0,
-    val estimatedSignalsCount: Int = 0,
-    val estimatedSurvivorSum: Int = 0,
-    val fieldVerifiedSignalsCount: Int = 0,
-    val deployedTeamsCount: Int = 0,
-    val staleSensorsCount: Int = 0,
-    val contradictionAlertsCount: Int = 0,
-    val activeMissionsCount: Int = 0,
-    val blockedRoadsCount: Int = 0,
-    val onlineSensorsCount: Int = 0,
-    val offlineSensorsCount: Int = 0,
-    val deadLetterSyncCount: Int = 0,
-)
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class SurakshaViewModel(
@@ -126,227 +84,154 @@ class SurakshaViewModel(
     val tileManager: OsmTileManager,
     private val networkMonitor: NetworkMonitor,
     private val syncManager: OfflineSyncManager,
-    val locationController: SurakshaLocationController,
+    private val locationController: SurakshaLocationController,
     private val preferences: SurakshaPreferences,
-    private val aiRepository: SurakshaAiRepository,
-    private val currentUserId: String,
+    val tokenStorage: SecureTokenStorage,
+    val currentUserId: String,
     private val initialDisplayName: String,
-) : ViewModel(), SyncOperationExecutor {
+    private val initialEmail: String,
+    private val initialPhotoUrl: String,
+) : ViewModel() {
+
+    private val compassProvider = CompassHeadingProvider(appContext)
+    private val separationEvaluator = SeparationAlertEvaluator()
+    private val sensorParser = SensorEventV1Parser()
+    private val httpGateway = HttpTlsGatewayAdapter(sensorParser)
+    private val wsGateway = WebSocketGatewayAdapter(sensorParser)
+    private val mqttGateway = MqttGatewayContract()
 
     val settings: StateFlow<SurakshaSettings> = preferences.settingsFlow
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), SurakshaSettings())
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SurakshaSettings())
 
     val networkState: StateFlow<NetworkState> = networkMonitor.networkState
     val locationFixState: StateFlow<LocationFixState> = locationController.locationState
+    val headingState: StateFlow<HeadingState> = compassProvider.headingState
 
     private val _activeOrgId = MutableStateFlow("")
     val activeOrgId: StateFlow<String> = _activeOrgId.asStateFlow()
 
-    val userProfileState: StateFlow<DataUiState<UserProfile?>> =
-        repository.observeUserProfile(currentUserId).toUiState("profile")
+    private val _activeTeamId = MutableStateFlow("")
+    val activeTeamId: StateFlow<String> = _activeTeamId.asStateFlow()
 
-    val currentOrganization: StateFlow<DataUiState<RescueOrganization?>> =
-        activeOrgId.flatMapLatest { orgId ->
-            if (orgId.isBlank()) flowOf(DataUiState.Loading) else repository.observeOrganization(orgId).toUiState("organization")
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), DataUiState.Loading)
+    private val _activeMissionId = MutableStateFlow("")
+    val activeMissionId: StateFlow<String> = _activeMissionId.asStateFlow()
 
-    val orgMembersState: StateFlow<DataUiState<List<OrgMember>>> =
-        activeOrgId.flatMapLatest { orgId ->
-            if (orgId.isBlank()) flowOf(DataUiState.Loading) else repository.observeOrgMembers(orgId).toUiState("org members")
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), DataUiState.Loading)
+    val userProfileState: StateFlow<UiState<UserProfile?>> =
+        repository.observeUserProfile(currentUserId)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), UiState.Loading)
 
-    val orgInvitesState: StateFlow<DataUiState<List<OrgInvite>>> =
-        activeOrgId.flatMapLatest { orgId ->
-            if (orgId.isBlank()) flowOf(DataUiState.Loading) else repository.observeOrgInvites(orgId).toUiState("org invites")
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), DataUiState.Loading)
+    val currentOrganization: StateFlow<UiState<RescueOrganization?>> =
+        _activeOrgId.flatMapLatest { repository.observeOrganization(it) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), UiState.Success(null))
 
-    val currentMemberRole: StateFlow<OrgRole> = orgMembersState
-        .map { state ->
-            val members = (state as? DataUiState.Success)?.data.orEmpty()
-            val mine = members.firstOrNull { it.userId == currentUserId }
-            mine?.let { OrgRole.fromValue(it.role) } ?: OrgRole.OBSERVER
-        }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), OrgRole.OBSERVER)
+    val orgMembersState: StateFlow<UiState<List<OrgMember>>> =
+        _activeOrgId.flatMapLatest { repository.observeOrgMembers(it) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), UiState.Success(emptyList()))
 
-    val rescueTeamsState: StateFlow<DataUiState<List<RescueTeam>>> =
-        activeOrgId.flatMapLatest { orgId ->
-            if (orgId.isBlank()) flowOf(DataUiState.Loading) else repository.observeRescueTeams(orgId).toUiState("rescue teams")
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), DataUiState.Loading)
+    val blockedMembersState: StateFlow<UiState<List<BlockedMembership>>> =
+        _activeOrgId.flatMapLatest { repository.observeBlockedMemberships(it) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), UiState.Success(emptyList()))
 
-    val rescueLocationsState: StateFlow<DataUiState<List<RescueLocation>>> =
-        activeOrgId.flatMapLatest { orgId ->
-            if (orgId.isBlank()) flowOf(DataUiState.Loading) else repository.observeRescueLocations(orgId).toUiState("rescue locations")
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), DataUiState.Loading)
+    val invitationsState: StateFlow<UiState<List<Invitation>>> =
+        _activeOrgId.flatMapLatest { repository.observeInvitations(it) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), UiState.Success(emptyList()))
 
-    val presenceSignalsState: StateFlow<DataUiState<List<PresenceSignal>>> =
-        activeOrgId.flatMapLatest { orgId ->
-            if (orgId.isBlank()) flowOf(DataUiState.Loading) else repository.observePresenceSignals(orgId).toUiState("presence signals")
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), DataUiState.Loading)
+    val teamsState: StateFlow<UiState<List<RescueTeam>>> =
+        _activeOrgId.flatMapLatest { repository.observeTeams(it) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), UiState.Success(emptyList()))
 
-    val sectorSummaries: StateFlow<List<SectorFusionSummary>> = presenceSignalsState
-        .map { state ->
-            SensorFusionProcessor.summarizeSectors((state as? DataUiState.Success)?.data.orEmpty())
-        }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
+    val missionsState: StateFlow<UiState<List<Mission>>> =
+        _activeOrgId.flatMapLatest { repository.observeMissions(it) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), UiState.Success(emptyList()))
 
-    val rescueRegistryState: StateFlow<DataUiState<List<RescueRegistryEntry>>> =
-        activeOrgId.flatMapLatest { orgId ->
-            if (orgId.isBlank()) flowOf(DataUiState.Loading) else repository.observeRescueRegistry(orgId).toUiState("rescue registry")
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), DataUiState.Loading)
+    val auditLogsState: StateFlow<UiState<List<AuditLog>>> =
+        _activeOrgId.flatMapLatest { repository.observeAuditLogs(it) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), UiState.Success(emptyList()))
 
-    val sosIncidentsState: StateFlow<DataUiState<List<SosIncident>>> =
-        activeOrgId.flatMapLatest { orgId ->
-            if (orgId.isBlank()) flowOf(DataUiState.Loading) else repository.observeSosIncidents(orgId).toUiState("SOS incidents")
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), DataUiState.Loading)
+    val gatewayDevicesState: StateFlow<UiState<List<GatewayDevice>>> =
+        _activeOrgId.flatMapLatest { repository.observeGatewayDevices(it) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), UiState.Success(emptyList()))
 
-    val notificationDispatchesState: StateFlow<DataUiState<List<NotificationDispatchRecord>>> =
-        activeOrgId.flatMapLatest { orgId ->
-            if (orgId.isBlank()) flowOf(DataUiState.Loading) else repository.observeNotificationDispatches(orgId).toUiState("notification dispatches")
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), DataUiState.Loading)
+    private val missionPair = combine(_activeOrgId, _activeMissionId) { o, m -> o to m }
 
-    val activityLogsState: StateFlow<DataUiState<List<ActivityLogEntry>>> =
-        activeOrgId.flatMapLatest { orgId ->
-            if (orgId.isBlank()) flowOf(DataUiState.Loading) else repository.observeActivityLogs(orgId).toUiState("activity logs")
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), DataUiState.Loading)
+    val missionMembersState: StateFlow<UiState<List<MissionMember>>> =
+        missionPair.flatMapLatest { (o, m) -> repository.observeMissionMembers(o, m) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), UiState.Success(emptyList()))
 
-    val missionsState: StateFlow<DataUiState<List<RescueMission>>> =
-        activeOrgId.flatMapLatest { orgId ->
-            if (orgId.isBlank()) flowOf(DataUiState.Loading) else repository.observeMissions(orgId).toUiState("missions")
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), DataUiState.Loading)
+    val memberLocationsState: StateFlow<UiState<List<MemberLocation>>> =
+        missionPair.flatMapLatest { (o, m) -> repository.observeMemberLocations(o, m) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), UiState.Success(emptyList()))
 
-    val blockedRoadsState: StateFlow<DataUiState<List<BlockedRoadMarker>>> =
-        activeOrgId.flatMapLatest { orgId ->
-            if (orgId.isBlank()) flowOf(DataUiState.Loading) else repository.observeBlockedRoads(orgId).toUiState("blocked roads")
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), DataUiState.Loading)
+    val sensorDevicesState: StateFlow<UiState<List<SensorDevice>>> =
+        missionPair.flatMapLatest { (o, m) -> repository.observeSensorDevices(o, m) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), UiState.Success(emptyList()))
 
-    val droneTelemetryState: StateFlow<DataUiState<List<DroneTelemetry>>> =
-        activeOrgId.flatMapLatest { orgId ->
-            if (orgId.isBlank()) flowOf(DataUiState.Loading) else repository.observeDroneTelemetry(orgId).toUiState("drone telemetry")
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), DataUiState.Loading)
+    val sensorHealthState: StateFlow<UiState<List<SensorHealth>>> =
+        missionPair.flatMapLatest { (o, m) -> repository.observeSensorHealth(o, m) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), UiState.Success(emptyList()))
+
+    val sensorEventsState: StateFlow<UiState<List<SensorEvent>>> =
+        missionPair.flatMapLatest { (o, m) -> repository.observeSensorEvents(o, m) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), UiState.Success(emptyList()))
+
+    val detectionsState: StateFlow<UiState<List<DetectionObservation>>> =
+        missionPair.flatMapLatest { (o, m) -> repository.observeDetections(o, m) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), UiState.Success(emptyList()))
+
+    val sosAlertsState: StateFlow<UiState<List<SosAlert>>> =
+        missionPair.flatMapLatest { (o, m) -> repository.observeSosAlerts(o, m) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), UiState.Success(emptyList()))
 
     val offlineRegions: StateFlow<List<OfflineMapRegionEntity>> = offlineCache.offlineRegions
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val pendingSyncOps: StateFlow<List<PendingSyncOperationEntity>> = offlineCache.pendingSyncOperations
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val syncHistory: StateFlow<List<SyncHistoryEntity>> = offlineCache.syncHistory
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val joinedOrgs: StateFlow<List<JoinedOrgEntity>> = offlineCache.joinedOrganizations
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val cachedMemberLocations: StateFlow<List<CachedMemberLocationEntity>> =
+        _activeMissionId.flatMapLatest { mid ->
+            if (mid.isBlank()) flowOf(emptyList()) else offlineCache.observeCachedMemberLocations(mid)
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val cachedSensorHealth: StateFlow<List<CachedSensorHealthEntity>> =
+        _activeMissionId.flatMapLatest { mid ->
+            if (mid.isBlank()) flowOf(emptyList()) else offlineCache.observeCachedSensorHealth(mid)
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val cachedSensorEvents: StateFlow<List<CachedSensorEventEntity>> =
+        _activeMissionId.flatMapLatest { mid ->
+            if (mid.isBlank()) flowOf(emptyList()) else offlineCache.observeCachedSensorEvents(mid)
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val downloadProgress: StateFlow<Map<String, RegionDownloadProgress>> = tileManager.downloadProgress
     val totalCachedTileCount: StateFlow<Int> = offlineCache.totalCachedTileCount
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), 0)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
     val totalCachedBytes: StateFlow<Long> = offlineCache.totalCachedBytes
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), 0L)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0L)
 
-    val pendingSyncOps: StateFlow<List<PendingSyncOperationEntity>> = syncManager.pendingOperations
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
-    val syncHistory: StateFlow<List<SyncHistoryEntity>> = offlineCache.syncHistory
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
-    val joinedOrganizations: StateFlow<List<JoinedOrgEntity>> = offlineCache.joinedOrganizations
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
-    val isSyncing: StateFlow<Boolean> = syncManager.isSyncing
-    val lastSuccessfulSyncMillis: StateFlow<Long> = syncManager.lastSuccessfulSyncMillis
+    val currentRole: StateFlow<OrgRole> = orgMembersState.map { state ->
+        val mine = (state as? UiState.Success)?.data?.firstOrNull { it.userId == currentUserId }
+        OrgRole.fromValue(mine?.role.orEmpty())
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), OrgRole.TEAM_MEMBER)
 
-    val cachedSensorLogs: StateFlow<List<CachedSensorLogEntity>> = offlineCache.recentSensorLogs
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
-    val slamSessions: StateFlow<List<SlamSessionEntity>> = offlineCache.slamSessions
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
+    val isMembershipRevoked: StateFlow<Boolean> = combine(orgMembersState, currentOrganization) { mState, oState ->
+        val mine = (mState as? UiState.Success)?.data?.firstOrNull { it.userId == currentUserId }
+        val permDenied = (oState as? UiState.Error)?.isPermissionDenied == true ||
+            (mState as? UiState.Error)?.isPermissionDenied == true
+        mine?.isRevoked() == true || (permDenied && _activeOrgId.value.isNotBlank())
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
-    private val _dashboardFilter = MutableStateFlow(DashboardFilterState())
-    val dashboardFilter: StateFlow<DashboardFilterState> = _dashboardFilter.asStateFlow()
+    val activeMission: StateFlow<Mission?> = combine(missionsState, _activeMissionId) { mState, mid ->
+        (mState as? UiState.Success)?.data?.firstOrNull { it.missionId == mid }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
-    val sensorAdapters: StateFlow<List<SensorAdapterDescriptor>> = settings
-        .map { s ->
-            SensorArchitectureCatalog.buildAdapters(
-                context = appContext,
-                httpGatewayUrl = s.hardwareGatewayUrl,
-                httpGatewayToken = s.hardwareGatewayToken,
-            ).map { it.descriptor }
-        }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
-
-    private val coreCollectionsAnalyticsFlow = combine(
-        sosIncidentsState,
-        rescueRegistryState,
-        presenceSignalsState,
-        rescueTeamsState,
-        rescueLocationsState,
-    ) { sosState, regState, sigState, teamState, locState ->
-        listOf(sosState, regState, sigState, teamState, locState)
-    }
-
-    private val opsAuxAnalyticsFlow = combine(
-        missionsState,
-        blockedRoadsState,
-        pendingSyncOps,
-        sensorAdapters,
-        _dashboardFilter,
-    ) { mState, rState, syncOps, adapters, filter ->
-        listOf(mState, rState, syncOps, adapters, filter)
-    }
-
-    @Suppress("UNCHECKED_CAST")
-    val analytics: StateFlow<OperationalAnalytics> = combine(
-        coreCollectionsAnalyticsFlow,
-        opsAuxAnalyticsFlow,
-    ) { core, aux ->
-        val sosState = core[0] as DataUiState<List<SosIncident>>
-        val regState = core[1] as DataUiState<List<RescueRegistryEntry>>
-        val sigState = core[2] as DataUiState<List<PresenceSignal>>
-        val teamState = core[3] as DataUiState<List<RescueTeam>>
-        val locState = core[4] as DataUiState<List<RescueLocation>>
-
-        val missionsStateVal = aux[0] as DataUiState<List<RescueMission>>
-        val roadsStateVal = aux[1] as DataUiState<List<BlockedRoadMarker>>
-        val syncOps = aux[2] as List<PendingSyncOperationEntity>
-        val adapters = aux[3] as List<SensorAdapterDescriptor>
-        val filter = aux[4] as DashboardFilterState
-
-        val now = System.currentTimeMillis()
-        val windowMs = filter.timeWindowHours * 3600_000L
-        val q = filter.searchQuery.trim()
-        val sosList = (sosState as? DataUiState.Success)?.data.orEmpty().filter {
-            (filter.teamFilter == "all" || it.teamCode == filter.teamFilter) &&
-                (windowMs == 0L || (now - (it.createdAt?.toDate()?.time ?: now)) <= windowMs) &&
-                (q.isBlank() || it.description.contains(q, true) || it.incidentId.contains(q, true))
-        }
-        val regList = (regState as? DataUiState.Success)?.data.orEmpty()
-        val sigList = (sigState as? DataUiState.Success)?.data.orEmpty()
-        val teamList = (teamState as? DataUiState.Success)?.data.orEmpty()
-        val locList = (locState as? DataUiState.Success)?.data.orEmpty().filter {
-            filter.hazardFilter == "all" || it.hazardType == filter.hazardFilter
-        }
-        val missionList = (missionsStateVal as? DataUiState.Success)?.data.orEmpty()
-        val roadList = (roadsStateVal as? DataUiState.Success)?.data.orEmpty()
-        val summaries = SensorFusionProcessor.summarizeSectors(sigList)
-
-        val ackLatencies = sosList.mapNotNull { inc ->
-            val createdMs = inc.createdAt?.toDate()?.time
-            if (createdMs != null && inc.acknowledgedAtMillis > createdMs) {
-                (inc.acknowledgedAtMillis - createdMs) / 60_000.0
-            } else null
-        }
-
-        OperationalAnalytics(
-            activeIncidentsCount = sosList.count { it.status !in listOf("resolved", "closed") },
-            unacknowledgedSosCount = sosList.count { it.status in listOf("created", "pending_delivery", "delivered") },
-            avgAckLatencyMinutes = if (ackLatencies.isNotEmpty()) ackLatencies.average() else null,
-            disasterLocationsCount = locList.size,
-            verifiedRegistryCount = regList.count { it.verificationStatus == "verified" },
-            verifiedSurvivorCount = regList.count { it.category == "verified_survivor" && it.verificationStatus == "verified" },
-            missingPersonsCount = regList.count { it.category == "missing_person" && it.rescueStatus != "resolved" },
-            medicalRequestsCount = regList.count { it.category == "medical_request" && it.rescueStatus != "resolved" },
-            estimatedSignalsCount = sigList.count { it.verificationStatus in listOf("estimated", "unverified") },
-            estimatedSurvivorSum = summaries.sumOf { it.combinedMaxCount },
-            fieldVerifiedSignalsCount = sigList.count { it.verificationStatus == "field_verified" },
-            deployedTeamsCount = teamList.count { it.status == "deployed" || it.status == "active" },
-            staleSensorsCount = sigList.count {
-                it.verificationStatus == "outdated" ||
-                    (it.observationTimestampMillis > 0L && now - it.observationTimestampMillis > SensorFusionProcessor.STALE_THRESHOLD_MILLIS)
-            },
-            contradictionAlertsCount = summaries.count { it.hasContradiction },
-            activeMissionsCount = missionList.count { it.status !in listOf("completed", "aborted") },
-            blockedRoadsCount = roadList.count { it.active },
-            onlineSensorsCount = adapters.count { it.sensorHealth == "healthy" },
-            offlineSensorsCount = adapters.count { it.sensorHealth != "healthy" },
-            deadLetterSyncCount = syncOps.count { it.syncStatus == SyncStatus.DEAD_LETTER.value },
-        )
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), OperationalAnalytics())
+    val hardwareCatalog: List<SensorAdapterDescriptor> = SensorArchitectureCatalog.descriptors()
 
     private val _mapLayers = MutableStateFlow(MapLayerConfig())
     val mapLayers: StateFlow<MapLayerConfig> = _mapLayers.asStateFlow()
@@ -354,185 +239,816 @@ class SurakshaViewModel(
     private val _mapSearchResults = MutableStateFlow<List<IndiaPlace>>(emptyList())
     val mapSearchResults: StateFlow<List<IndiaPlace>> = _mapSearchResults.asStateFlow()
 
-    private val _activeRoute = MutableStateFlow<RescueRoute?>(null)
-    val activeRoute: StateFlow<RescueRoute?> = _activeRoute.asStateFlow()
+    private val _separationWarnings = MutableStateFlow<List<SeparationWarningItem>>(emptyList())
+    val separationWarnings: StateFlow<List<SeparationWarningItem>> = _separationWarnings.asStateFlow()
 
-    private val _selectedScenario = MutableStateFlow(EnvScenario.COLLAPSED_URBAN)
-    val selectedScenario: StateFlow<EnvScenario> = _selectedScenario.asStateFlow()
+    private val _gatewayStatusText = MutableStateFlow("No Edge Gateway Connected")
+    val gatewayStatusText: StateFlow<String> = _gatewayStatusText.asStateFlow()
 
-    private val _sweepProgress = MutableStateFlow(0.62f)
-    val sweepProgress: StateFlow<Float> = _sweepProgress.asStateFlow()
+    private val _actionMessage = MutableStateFlow<String?>(null)
+    val actionMessage: StateFlow<String?> = _actionMessage.asStateFlow()
 
-    private val _isSlamScanning = MutableStateFlow(false)
-    val isSlamScanning: StateFlow<Boolean> = _isSlamScanning.asStateFlow()
+    /** Effective sensor devices (returns isolated fixture devices ONLY in Dev Demo Mode; never written to Firestore). */
+    val effectiveSensorDevices: StateFlow<List<SensorDevice>> = combine(
+        sensorDevicesState,
+        settings,
+        _activeOrgId,
+        _activeMissionId,
+    ) { state, cfg, orgId, missionId ->
+        val live = (state as? UiState.Success)?.data.orEmpty()
+        if (cfg.devDemoModeEnabled) DevDemoFixtureProvider.buildIsolatedFixtureDevices(orgId, missionId) else live
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    private val _slamFrame = MutableStateFlow(
-        SensorArchitectureCatalog.generateSlamFrame(EnvScenario.COLLAPSED_URBAN, 0.62f)
-    )
-    val slamFrame: StateFlow<SlamEnvironmentFrame> = _slamFrame.asStateFlow()
+    /** Effective sensor events (isolated fixtures ONLY in Dev Demo Mode; otherwise Firestore live + Room offline cache fallback). */
+    val effectiveSensorEvents: StateFlow<List<SensorEvent>> = combine(
+        sensorEventsState,
+        cachedSensorEvents,
+        networkState,
+        settings,
+        _activeOrgId,
+        _activeMissionId,
+    ) { arr ->
+        @Suppress("UNCHECKED_CAST")
+        val state = arr[0] as UiState<List<SensorEvent>>
+        @Suppress("UNCHECKED_CAST")
+        val cached = arr[1] as List<CachedSensorEventEntity>
+        val net = arr[2] as NetworkState
+        val cfg = arr[3] as SurakshaSettings
+        val orgId = arr[4] as String
+        val missionId = arr[5] as String
 
-    private val _aiTriageState = MutableStateFlow<AiTriageUiState>(AiTriageUiState.Idle)
-    val aiTriageState: StateFlow<AiTriageUiState> = _aiTriageState.asStateFlow()
+        if (cfg.devDemoModeEnabled) {
+            DevDemoFixtureProvider.buildIsolatedFixtureEvents(orgId, missionId)
+        } else {
+            val live = (state as? UiState.Success)?.data.orEmpty()
+            if (live.isNotEmpty() || net != NetworkState.OFFLINE) live else cached.map { it.toModel() }
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    private val _aiTriageHistory = MutableStateFlow<List<AiTriageReport>>(emptyList())
-    val aiTriageHistory: StateFlow<List<AiTriageReport>> = _aiTriageHistory.asStateFlow()
+    /** Effective member locations (Firestore live + Room offline cache fallback). */
+    val effectiveMemberLocations: StateFlow<List<MemberLocation>> = combine(
+        memberLocationsState,
+        cachedMemberLocations,
+        networkState,
+    ) { state, cached, net ->
+        val live = (state as? UiState.Success)?.data.orEmpty()
+        if (live.isNotEmpty() || net != NetworkState.OFFLINE) live else cached.map { it.toModel() }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    private val _aiChatAnswer = MutableStateFlow<String?>(null)
-    val aiChatAnswer: StateFlow<String?> = _aiChatAnswer.asStateFlow()
-
-    private val _aiChatLoading = MutableStateFlow(false)
-    val aiChatLoading: StateFlow<Boolean> = _aiChatLoading.asStateFlow()
-
-    private val _exportedReportText = MutableStateFlow<String?>(null)
-    val exportedReportText: StateFlow<String?> = _exportedReportText.asStateFlow()
-
-    private val _actionStatusMessage = MutableStateFlow<String?>(null)
-    val actionStatusMessage: StateFlow<String?> = _actionStatusMessage.asStateFlow()
-
-    private var lastSyncedLocationAtMillis = 0L
+    val radarTargets: StateFlow<List<RadarTarget>> = combine(
+        locationFixState,
+        effectiveMemberLocations,
+        effectiveSensorDevices,
+        effectiveSensorEvents,
+        sosAlertsState,
+    ) { fix, members, devs, events, alertsState ->
+        val selfLat = (fix as? LocationFixState.Available)?.latitude
+        val selfLon = (fix as? LocationFixState.Available)?.longitude
+        val alerts = (alertsState as? UiState.Success)?.data.orEmpty()
+        RadarGeoMath.buildRadarTargets(
+            selfUid = currentUserId,
+            selfLat = selfLat,
+            selfLon = selfLon,
+            members = members,
+            sensorDevices = devs,
+            sensorEvents = events,
+            sosAlerts = alerts,
+        )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     init {
-        syncManager.attachExecutor(this)
+        compassProvider.start()
+        networkMonitor.refreshNow()
+
         viewModelScope.launch {
             offlineCache.ensureDefaultRegionsSeeded()
-            val orgRes = repository.ensureWorkspaceInitialized(
-                displayName = initialDisplayName,
-                preferredOrgId = settings.value.activeOrgId,
-            )
-            orgRes.onSuccess { resolvedOrgId ->
-                _activeOrgId.value = resolvedOrgId
-                preferences.setActiveOrgId(resolvedOrgId)
-                repository.seedDemoDatasetIfEmpty(resolvedOrgId)
-                SurakshaMessagingService.registerCurrentDeviceToken(
-                    context = appContext,
-                    orgId = resolvedOrgId,
-                    notificationsEnabled = settings.value.notificationsEnabled,
-                )
-            }.onFailure { err ->
-                _actionStatusMessage.value = "Workspace init error: ${err.localizedMessage}"
+            repository.ensureUserProfile(initialDisplayName, initialEmail, initialPhotoUrl)
+        }
+
+        // Sync active workspace from settings + UserProfile
+        viewModelScope.launch {
+            combine(settings, userProfileState) { cfg, pState -> cfg to (pState as? UiState.Success)?.data }
+                .collect { (cfg, profile) ->
+                    val orgId = cfg.activeOrgId.ifBlank { profile?.activeOrgId.orEmpty() }
+                    val teamId = cfg.activeTeamId.ifBlank { profile?.activeTeamId.orEmpty() }
+                    val missionId = cfg.activeMissionId.ifBlank { profile?.activeMissionId.orEmpty() }
+                    if (_activeOrgId.value != orgId) _activeOrgId.value = orgId
+                    if (_activeTeamId.value != teamId) _activeTeamId.value = teamId
+                    if (_activeMissionId.value != missionId) _activeMissionId.value = missionId
+                }
+        }
+
+        // Auto-resume foreground GPS ONLY if explicit consent already saved & permissions valid
+        viewModelScope.launch {
+            preferences.settingsFlow.collect { cfg ->
+                if (cfg.locationConsentEnabled &&
+                    locationController.hasLocationPermission() &&
+                    locationController.isDeviceLocationEnabled() &&
+                    locationFixState.value is LocationFixState.OptedOut
+                ) {
+                    locationController.startTracking(useForegroundService = true)
+                }
             }
         }
+
+        // Cache live locations & sensor events into Room for offline survival
         viewModelScope.launch {
-            combine(currentOrganization, currentMemberRole) { orgState, role ->
-                (orgState as? DataUiState.Success)?.data to role
-            }.collect { (org, role) ->
-                if (org != null && org.id.isNotBlank()) {
-                    offlineCache.recordJoinedOrganization(
-                        orgId = org.id,
-                        orgName = org.orgName,
-                        orgCode = org.orgCode,
-                        role = role.value,
+            memberLocationsState.collect { state ->
+                val mid = _activeMissionId.value
+                val list = (state as? UiState.Success)?.data.orEmpty()
+                if (mid.isNotBlank() && list.isNotEmpty()) {
+                    val now = System.currentTimeMillis()
+                    offlineCache.cacheMissionLocations(
+                        mid,
+                        list.map {
+                            CachedMemberLocationEntity(
+                                cacheKey = "${it.missionId}:${it.userId}",
+                                orgId = it.orgId,
+                                missionId = it.missionId,
+                                userId = it.userId,
+                                displayName = it.displayName,
+                                callsign = it.callsign,
+                                role = it.role,
+                                sharingEnabled = it.sharingEnabled,
+                                hasValidLocation = it.hasValidLocation,
+                                latitude = it.latitude,
+                                longitude = it.longitude,
+                                accuracyMeters = it.accuracyMeters,
+                                headingDegrees = it.headingDegrees,
+                                headingReliable = it.headingReliable,
+                                batteryPercent = it.batteryPercent,
+                                connectionStatus = it.connectionStatus,
+                                locationTimestampMillis = it.locationTimestampMillis,
+                                unavailableReason = it.unavailableReason,
+                                cachedAtMillis = now,
+                            )
+                        },
                     )
                 }
             }
         }
-        // Real-time continuous GPS push to assigned/active responder team when opted in
         viewModelScope.launch {
-            locationFixState
-                .collect { fix ->
-                    if (fix is LocationFixState.Available) {
-                        val now = System.currentTimeMillis()
-                        if (now - lastSyncedLocationAtMillis >= 15_000L) {
-                            lastSyncedLocationAtMillis = now
-                            pushDeviceLocationToTeam(fix)
+            sensorEventsState.collect { state ->
+                val list = (state as? UiState.Success)?.data.orEmpty()
+                if (list.isNotEmpty()) {
+                    val now = System.currentTimeMillis()
+                    offlineCache.cacheSensorEvents(
+                        list.map {
+                            CachedSensorEventEntity(
+                                eventId = it.eventId,
+                                orgId = it.orgId,
+                                missionId = it.missionId,
+                                sensorId = it.sensorId,
+                                sensorType = it.sensorType,
+                                timestampUtcMillis = it.timestampUtcMillis,
+                                detectionType = it.detectionType,
+                                estimatedRangeMeters = it.estimatedRangeMeters,
+                                estimatedAzimuthDegrees = it.estimatedAzimuthDegrees,
+                                estimatedLatitude = it.estimatedLatitude,
+                                estimatedLongitude = it.estimatedLongitude,
+                                confidence = it.confidence,
+                                signalQuality = it.signalQuality,
+                                sourceDevice = it.sourceDevice,
+                                dataValidity = it.dataValidity,
+                                status = it.status,
+                                cachedAtMillis = now,
+                            )
                         }
-                    }
+                    )
                 }
+            }
         }
-        // Synthetic SLAM progression ticker (strictly demo/simulated)
+        viewModelScope.launch {
+            sensorDevicesState.collect { state ->
+                val list = (state as? UiState.Success)?.data.orEmpty()
+                if (list.isNotEmpty()) {
+                    val now = System.currentTimeMillis()
+                    offlineCache.cacheSensorHealth(
+                        list.map {
+                            CachedSensorHealthEntity(
+                                sensorId = it.sensorId,
+                                orgId = it.orgId,
+                                missionId = it.missionId,
+                                sensorType = it.sensorType,
+                                displayName = it.displayName,
+                                connectionStatus = it.connectionStatus,
+                                healthState = if (it.connectionStatus == "connected") "healthy" else "awaiting_integration",
+                                lastHeartbeatMillis = now,
+                                packetsReceived = 0L,
+                                packetsRejected = 0L,
+                                diagnosticNote = it.manufacturerModel,
+                                cachedAtMillis = now,
+                            )
+                        }
+                    )
+                }
+            }
+        }
+
+        // Push own MemberLocation & evaluate team separation on location/heading updates
+        viewModelScope.launch {
+            combine(locationFixState, headingState, activeMission, userProfileState) { fix, heading, mission, pState ->
+                listOf(fix, heading, mission, (pState as? UiState.Success)?.data)
+            }.collect { tuple ->
+                val fix = tuple[0] as LocationFixState
+                val heading = tuple[1] as HeadingState
+                val mission = tuple[2] as Mission? ?: return@collect
+                val profile = tuple[3] as UserProfile?
+                val orgId = _activeOrgId.value
+                if (orgId.isBlank() || mission.status != MissionStatus.ACTIVE.value) return@collect
+
+                val statusText = when (fix) {
+                    is LocationFixState.Available -> "online"
+                    is LocationFixState.GpsDisabled -> "gps_disabled"
+                    is LocationFixState.PermissionDenied -> "permission_denied"
+                    is LocationFixState.OptedOut -> "paused"
+                    is LocationFixState.Searching -> "online"
+                    is LocationFixState.Unavailable -> "stale"
+                }
+                val avail = fix as? LocationFixState.Available
+                repository.pushMemberLocation(
+                    MemberLocation(
+                        userId = currentUserId,
+                        orgId = orgId,
+                        missionId = mission.missionId,
+                        teamId = _activeTeamId.value.ifBlank { mission.teamId },
+                        displayName = profile?.displayName?.ifBlank { initialDisplayName } ?: initialDisplayName,
+                        callsign = profile?.callsign?.ifBlank { "RES-${currentUserId.take(4)}" } ?: "RES-01",
+                        role = currentRole.value.value,
+                        sharingEnabled = settings.value.locationConsentEnabled,
+                        hasValidLocation = avail != null,
+                        latitude = avail?.latitude ?: 0.0,
+                        longitude = avail?.longitude ?: 0.0,
+                        accuracyMeters = avail?.accuracyMeters?.toDouble() ?: 0.0,
+                        headingDegrees = heading.azimuthDegrees,
+                        headingReliable = heading.reliability.isUsable,
+                        batteryPercent = readBatteryPercent().toLong(),
+                        connectionStatus = statusText,
+                        locationTimestampMillis = avail?.timestampMillis ?: System.currentTimeMillis(),
+                        unavailableReason = when (fix) {
+                            is LocationFixState.GpsDisabled -> fix.reason
+                            is LocationFixState.PermissionDenied -> fix.reason
+                            is LocationFixState.OptedOut -> fix.reason
+                            is LocationFixState.Unavailable -> fix.reason
+                            else -> ""
+                        },
+                    )
+                )
+            }
+        }
+
+        // Separation evaluation ticker
         viewModelScope.launch {
             while (true) {
-                delay(750L)
-                if (_isSlamScanning.value) {
-                    val next = if (_sweepProgress.value >= 0.98f) 0.25f else _sweepProgress.value + 0.08f
-                    _sweepProgress.value = next
-                    _slamFrame.value = SensorArchitectureCatalog.generateSlamFrame(_selectedScenario.value, next)
+                val mission = activeMission.value
+                if (mission != null && mission.separationAlertEnabled && mission.status == MissionStatus.ACTIVE.value) {
+                    val locs = effectiveMemberLocations.value
+                    val leader = locs.firstOrNull { it.userId == mission.leaderUid && it.hasValidLocation }
+                    val refLat = leader?.latitude ?: mission.centerLatitude
+                    val refLon = leader?.longitude ?: mission.centerLongitude
+                    _separationWarnings.value = separationEvaluator.evaluate(
+                        leaderOrCenterLat = refLat,
+                        leaderOrCenterLon = refLon,
+                        members = locs,
+                        thresholdMeters = mission.separationThresholdMeters,
+                        delaySeconds = mission.separationDelaySeconds,
+                    )
+                } else {
+                    _separationWarnings.value = emptyList()
                 }
+                delay(5_000L)
+            }
+        }
+
+        // Ingest incoming WebSocket events cleanly when connected
+        viewModelScope.launch {
+            wsGateway.incomingEvents.collect { event ->
+                repository.ingestValidatedSensorEvent(event)
+            }
+        }
+
+        // Attach OfflineSyncManager executor
+        syncManager.attachExecutor(object : SyncOperationExecutor {
+            override suspend fun executeOperation(op: PendingSyncOperationEntity): Result<Unit> {
+                val json = JSONObject(op.payloadJson)
+                val docId = json.optString("docId").takeIf { it.isNotBlank() } ?: op.operationId
+                val missionId = json.optString("missionId")
+                return when (op.entityType) {
+                    "create_sos" -> repository.createSosAlert(
+                        SosAlert(
+                            alertId = docId,
+                            orgId = op.orgId,
+                            missionId = missionId,
+                            senderUid = currentUserId,
+                            senderName = json.optString("senderName", initialDisplayName),
+                            teamId = json.optString("teamId"),
+                            alertType = json.optString("alertType", "sos"),
+                            priority = json.optString("priority", "critical"),
+                            hasLocation = json.optBoolean("hasLocation", false),
+                            latitude = json.optDouble("latitude", 0.0),
+                            longitude = json.optDouble("longitude", 0.0),
+                            accuracyMeters = json.optDouble("accuracyMeters", 0.0),
+                            locationTimestampMillis = json.optLong("locationTimestampMillis", System.currentTimeMillis()),
+                            description = json.optString("description"),
+                        ),
+                        explicitId = docId,
+                    ).map { }
+                    "cancel_sos" -> repository.transitionSosAlert(
+                        orgId = op.orgId,
+                        missionId = missionId,
+                        alertId = json.optString("alertId", docId),
+                        nextStatus = SosAlertStatus.CANCELLED,
+                        actorName = initialDisplayName,
+                        cancelReason = json.optString("cancelReason", "Cancelled"),
+                    )
+                    "sensor_observation" -> repository.logDetectionObservation(
+                        DetectionObservation(
+                            detectionId = docId,
+                            orgId = op.orgId,
+                            missionId = missionId,
+                            sensorEventId = json.optString("sensorEventId"),
+                            sensorId = json.optString("sensorId"),
+                            operatorUid = currentUserId,
+                            notes = json.optString("notes"),
+                            outcome = json.optString("outcome", "investigating"),
+                        ),
+                        explicitId = docId,
+                    ).map { }
+                    else -> Result.failure(IllegalArgumentException("Unsupported queued operation: ${op.entityType}"))
+                }
+            }
+        })
+    }
+
+    override fun onCleared() {
+        compassProvider.stop()
+        super.onCleared()
+    }
+
+    fun clearActionMessage() {
+        _actionMessage.value = null
+    }
+
+    // --- Organization, Mission & Membership Actions ---
+
+    fun createOrganization(orgCode: String, orgName: String, region: String) {
+        viewModelScope.launch {
+            val profile = (userProfileState.value as? UiState.Success)?.data
+            val name = profile?.displayName?.ifBlank { initialDisplayName } ?: initialDisplayName
+            val callsign = profile?.callsign?.ifBlank { "ADM-01" } ?: "ADM-01"
+            val res = repository.orgStore.createOrganizationWorkspace(
+                orgCode = orgCode,
+                orgName = orgName,
+                region = region,
+                displayName = name,
+                callsign = callsign,
+                photoUrl = initialPhotoUrl,
+            )
+            res.onSuccess { (orgId, teamId, missionId) ->
+                preferences.setActiveWorkspace(orgId, teamId, missionId)
+                repository.updateUserProfileWorkspace(orgId, teamId, missionId)
+                offlineCache.recordJoinedOrganization(orgId, orgName, orgCode, OrgRole.ORGANIZATION_ADMIN.value)
+                _actionMessage.value = "Organization & primary mission created."
+            }.onFailure {
+                _actionMessage.value = it.localizedMessage ?: "Failed to create organization"
             }
         }
     }
 
-    fun clearStatusMessage() {
-        _actionStatusMessage.value = null
-    }
-
-    fun clearExportedReport() {
-        _exportedReportText.value = null
-    }
-
-    fun updateDashboardFilter(transform: (DashboardFilterState) -> DashboardFilterState) {
-        _dashboardFilter.value = transform(_dashboardFilter.value)
-    }
-
-    fun updateMapLayers(transform: (MapLayerConfig) -> MapLayerConfig) {
-        _mapLayers.value = transform(_mapLayers.value)
-    }
-
-    fun searchMapPlaces(query: String) {
+    fun joinOrganization(orgId: String, inviteCode: String) {
         viewModelScope.launch {
-            val allowNet = !settings.value.offlineMapMode && networkState.value != NetworkState.OFFLINE
-            _mapSearchResults.value = tileManager.searchLocation(query, allowNet)
-        }
-    }
-
-    fun clearMapSearch() {
-        _mapSearchResults.value = emptyList()
-    }
-
-    fun selectEnvScenario(scenario: EnvScenario) {
-        _selectedScenario.value = scenario
-        _slamFrame.value = SensorArchitectureCatalog.generateSlamFrame(scenario, _sweepProgress.value)
-    }
-
-    fun setSweepProgress(progress: Float) {
-        _sweepProgress.value = progress.coerceIn(0.15f, 1.0f)
-        _slamFrame.value = SensorArchitectureCatalog.generateSlamFrame(_selectedScenario.value, _sweepProgress.value)
-    }
-
-    fun toggleSlamScanning() {
-        _isSlamScanning.value = !_isSlamScanning.value
-    }
-
-    fun saveAndExportSlamSession(asCsv: Boolean) {
-        val frame = _slamFrame.value
-        val exported = if (asCsv) SlamExportFormatter.toCsv(frame) else SlamExportFormatter.toJson(frame)
-        viewModelScope.launch {
-            offlineCache.saveSlamSession(
-                SlamSessionEntity(
-                    sessionId = "slam_${UUID.randomUUID().toString().replace("-", "").take(10)}",
-                    orgId = _activeOrgId.value,
-                    scenario = frame.scenario.name,
-                    sweepProgress = _sweepProgress.value,
-                    gridSize = frame.gridSize,
-                    cellSizeMeters = frame.cellSizeMeters,
-                    obstacleCount = frame.obstacleCount,
-                    voidCount = frame.voidCount,
-                    thermalCount = frame.thermalCount,
-                    sourceKind = "simulated",
-                    uncertaintyNote = "±${String.format(Locale.US, "%.1f", frame.uncertaintyMeters)}m (Synthetic Grid)",
-                    exportedJson = exported.take(4000),
-                    createdAtMillis = System.currentTimeMillis(),
-                )
+            val profile = (userProfileState.value as? UiState.Success)?.data
+            val res = repository.orgStore.joinOrganizationWithInvite(
+                orgId = orgId.trim(),
+                inviteCode = inviteCode.trim(),
+                displayName = profile?.displayName?.ifBlank { initialDisplayName } ?: initialDisplayName,
+                callsign = profile?.callsign?.ifBlank { "RES-01" } ?: "RES-01",
+                photoUrl = initialPhotoUrl,
             )
-            _exportedReportText.value = exported
-            _actionStatusMessage.value = "SLAM session saved locally (${if (asCsv) "CSV" else "JSON"})."
+            res.onSuccess { (joinedOrg, teamId, missionId) ->
+                preferences.setActiveWorkspace(joinedOrg, teamId, missionId)
+                repository.updateUserProfileWorkspace(joinedOrg, teamId, missionId)
+                offlineCache.recordJoinedOrganization(joinedOrg, joinedOrg, "ORG", OrgRole.TEAM_MEMBER.value)
+                _actionMessage.value = "Joined organization $joinedOrg."
+            }.onFailure {
+                _actionMessage.value = it.localizedMessage ?: "Unable to join organization"
+            }
         }
     }
 
-    fun setDemoMode(enabled: Boolean) {
-        viewModelScope.launch { preferences.setDemoMode(enabled) }
+    fun selectWorkspace(orgId: String, teamId: String, missionId: String) {
+        viewModelScope.launch {
+            preferences.setActiveWorkspace(orgId, teamId, missionId)
+            repository.updateUserProfileWorkspace(orgId, teamId, missionId)
+            if (orgId.isNotBlank() && missionId.isNotBlank()) {
+                val profile = (userProfileState.value as? UiState.Success)?.data
+                repository.joinMissionParticipant(
+                    orgId = orgId,
+                    missionId = missionId,
+                    teamId = teamId,
+                    displayName = profile?.displayName?.ifBlank { initialDisplayName } ?: initialDisplayName,
+                    callsign = profile?.callsign?.ifBlank { "RES-01" } ?: "RES-01",
+                    photoUrl = initialPhotoUrl,
+                    role = currentRole.value,
+                )
+            }
+        }
     }
 
-    fun setOfflineMapMode(enabled: Boolean) {
-        viewModelScope.launch { preferences.setOfflineMapMode(enabled) }
+    fun createMission(
+        title: String,
+        description: String,
+        mode: EnvironmentMode,
+        thresholdMeters: Double,
+        delaySeconds: Long,
+    ) {
+        val orgId = _activeOrgId.value
+        val teamId = _activeTeamId.value.ifBlank { "team_default" }
+        val teamCode = (teamsState.value as? UiState.Success)?.data?.firstOrNull { it.id == teamId }?.teamCode ?: "TEAM"
+        val fix = locationFixState.value as? LocationFixState.Available
+        val profile = (userProfileState.value as? UiState.Success)?.data
+        viewModelScope.launch {
+            repository.createMission(
+                orgId = orgId,
+                teamId = teamId,
+                teamCode = teamCode,
+                title = title,
+                description = description,
+                environmentMode = mode,
+                separationThresholdMeters = thresholdMeters,
+                separationDelaySeconds = delaySeconds,
+                centerLatitude = fix?.latitude ?: 30.5506,
+                centerLongitude = fix?.longitude ?: 79.5660,
+                displayName = profile?.displayName?.ifBlank { initialDisplayName } ?: initialDisplayName,
+                callsign = profile?.callsign?.ifBlank { "LDR-01" } ?: "LDR-01",
+                photoUrl = initialPhotoUrl,
+                role = currentRole.value,
+            ).onSuccess { missionId ->
+                preferences.setActiveWorkspace(orgId, teamId, missionId)
+                repository.updateUserProfileWorkspace(orgId, teamId, missionId)
+                _actionMessage.value = "Mission created & activated."
+            }.onFailure {
+                _actionMessage.value = it.localizedMessage ?: "Mission creation denied"
+            }
+        }
     }
 
-    fun setRevealSensitivePii(reveal: Boolean) {
-        if (reveal && !currentMemberRole.value.canRevealSensitivePii()) {
-            _actionStatusMessage.value = "RBAC Denied: Only Org Admin, Team Leader, or Medic may reveal masked contact details."
+    fun updateMissionSettings(
+        mission: Mission,
+        mode: EnvironmentMode,
+        status: MissionStatus,
+        separationEnabled: Boolean,
+        thresholdMeters: Double,
+        delaySeconds: Long,
+    ) {
+        viewModelScope.launch {
+            repository.updateMissionSettings(
+                orgId = _activeOrgId.value,
+                mission = mission,
+                environmentMode = mode,
+                status = status,
+                separationEnabled = separationEnabled,
+                separationThresholdMeters = thresholdMeters,
+                separationDelaySeconds = delaySeconds,
+            ).onSuccess {
+                _actionMessage.value = "Mission configuration updated."
+            }.onFailure {
+                _actionMessage.value = it.localizedMessage ?: "Mission update failed"
+            }
+        }
+    }
+
+    fun createTeam(teamCode: String, teamName: String) {
+        viewModelScope.launch {
+            val actor = (userProfileState.value as? UiState.Success)?.data?.displayName ?: initialDisplayName
+            repository.orgStore.createTeam(_activeOrgId.value, teamCode, teamName, actor)
+                .onSuccess { _actionMessage.value = "Team $teamName created." }
+                .onFailure { _actionMessage.value = it.localizedMessage ?: "Team creation denied" }
+        }
+    }
+
+    fun toggleAllowMemberInvites(allow: Boolean) {
+        viewModelScope.launch {
+            repository.orgStore.setAllowMemberInvites(_activeOrgId.value, allow)
+                .onSuccess { _actionMessage.value = if (allow) "Member invites require Admin approval." else "Member invites disabled (Admin only)." }
+                .onFailure { _actionMessage.value = it.localizedMessage ?: "Failed to update invite policy" }
+        }
+    }
+
+    fun createInvitation(assignedRole: OrgRole, targetEmail: String) {
+        val orgId = _activeOrgId.value
+        val actor = (userProfileState.value as? UiState.Success)?.data?.displayName ?: initialDisplayName
+        viewModelScope.launch {
+            repository.orgStore.createInvitation(
+                orgId = orgId,
+                assignedRole = assignedRole,
+                targetTeamId = _activeTeamId.value,
+                targetMissionId = _activeMissionId.value,
+                targetEmail = targetEmail,
+                callerRole = currentRole.value,
+                callerName = actor,
+            ).onSuccess { inv ->
+                _actionMessage.value = if (inv.status == "approved") {
+                    "Invite ready: ${inv.inviteCode}"
+                } else {
+                    "Invite ${inv.inviteCode} queued for Admin approval."
+                }
+            }.onFailure {
+                _actionMessage.value = it.localizedMessage ?: "Invite creation denied"
+            }
+        }
+    }
+
+    fun approveOrRejectInvitation(inviteCode: String, approve: Boolean) {
+        val actor = (userProfileState.value as? UiState.Success)?.data?.displayName ?: initialDisplayName
+        viewModelScope.launch {
+            repository.orgStore.approveOrRejectInvitation(_activeOrgId.value, inviteCode, approve, actor)
+                .onSuccess { _actionMessage.value = "Invite $inviteCode ${if (approve) "approved" else "rejected"}." }
+                .onFailure { _actionMessage.value = it.localizedMessage ?: "Action denied" }
+        }
+    }
+
+    fun updateMemberRole(targetUid: String, newRole: OrgRole) {
+        val actor = (userProfileState.value as? UiState.Success)?.data?.displayName ?: initialDisplayName
+        viewModelScope.launch {
+            repository.orgStore.updateMemberRole(_activeOrgId.value, targetUid, newRole, actor)
+                .onSuccess { _actionMessage.value = "Role updated to ${newRole.label}" }
+                .onFailure { _actionMessage.value = it.localizedMessage ?: "Role change denied" }
+        }
+    }
+
+    fun removeAndBlockMember(targetMember: OrgMember, reason: String) {
+        val actor = (userProfileState.value as? UiState.Success)?.data?.displayName ?: initialDisplayName
+        viewModelScope.launch {
+            repository.orgStore.removeMemberAndBlock(
+                orgId = _activeOrgId.value,
+                targetMember = targetMember,
+                activeMissionId = _activeMissionId.value,
+                reason = reason,
+                actorName = actor,
+            ).onSuccess {
+                _actionMessage.value = "${targetMember.displayName} removed, blocked & audited."
+            }.onFailure {
+                _actionMessage.value = it.localizedMessage ?: "Member removal denied"
+            }
+        }
+    }
+
+    fun reinstateBlockedMember(blocked: BlockedMembership) {
+        val actor = (userProfileState.value as? UiState.Success)?.data?.displayName ?: initialDisplayName
+        viewModelScope.launch {
+            repository.orgStore.reinstateBlockedMember(_activeOrgId.value, blocked, actor)
+                .onSuccess { _actionMessage.value = "User ${blocked.userId} reinstated by Admin." }
+                .onFailure { _actionMessage.value = it.localizedMessage ?: "Only Org Admin can reinstate" }
+        }
+    }
+
+    // --- SOS & Separation Alerts ---
+
+    fun triggerSosAlert(description: String, alertType: String = "sos", priority: String = "critical") {
+        val orgId = _activeOrgId.value
+        val missionId = _activeMissionId.value
+        if (orgId.isBlank() || missionId.isBlank()) {
+            _actionMessage.value = "Select or join an active Mission before sending SOS."
             return
         }
-        viewModelScope.launch { preferences.setRevealSensitivePii(reveal) }
+        val fix = locationFixState.value as? LocationFixState.Available
+        val profile = (userProfileState.value as? UiState.Success)?.data
+        val alert = SosAlert(
+            orgId = orgId,
+            missionId = missionId,
+            senderUid = currentUserId,
+            senderName = profile?.displayName?.ifBlank { initialDisplayName } ?: initialDisplayName,
+            teamId = _activeTeamId.value,
+            alertType = alertType,
+            priority = priority,
+            hasLocation = fix != null,
+            latitude = fix?.latitude ?: 0.0,
+            longitude = fix?.longitude ?: 0.0,
+            accuracyMeters = fix?.accuracyMeters?.toDouble() ?: 0.0,
+            locationTimestampMillis = fix?.timestampMillis ?: System.currentTimeMillis(),
+            description = description.ifBlank { "Immediate responder SOS assistance requested" },
+        )
+
+        viewModelScope.launch {
+            if (networkMonitor.refreshNow() == NetworkState.OFFLINE) {
+                syncManager.enqueuePendingOperation(
+                    orgId = orgId,
+                    entityType = "create_sos",
+                    payload = JSONObject().apply {
+                        put("missionId", missionId)
+                        put("senderName", alert.senderName)
+                        put("teamId", alert.teamId)
+                        put("alertType", alert.alertType)
+                        put("priority", alert.priority)
+                        put("hasLocation", alert.hasLocation)
+                        put("latitude", alert.latitude)
+                        put("longitude", alert.longitude)
+                        put("accuracyMeters", alert.accuracyMeters)
+                        put("locationTimestampMillis", alert.locationTimestampMillis)
+                        put("description", alert.description)
+                    },
+                )
+                _actionMessage.value = "Offline: SOS queued for immediate transmission upon reconnect."
+            } else {
+                repository.createSosAlert(alert)
+                    .onSuccess { _actionMessage.value = "SOS alert transmitted to mission responders." }
+                    .onFailure { err ->
+                        _actionMessage.value = err.localizedMessage ?: "SOS dispatch failed"
+                    }
+            }
+        }
+    }
+
+    fun transitionSosAlert(alert: SosAlert, nextStatus: SosAlertStatus, cancelReason: String = "") {
+        val orgId = _activeOrgId.value
+        val missionId = _activeMissionId.value
+        val actor = (userProfileState.value as? UiState.Success)?.data?.displayName ?: initialDisplayName
+        viewModelScope.launch {
+            if (nextStatus == SosAlertStatus.CANCELLED && networkMonitor.refreshNow() == NetworkState.OFFLINE) {
+                syncManager.enqueuePendingOperation(
+                    orgId = orgId,
+                    entityType = "cancel_sos",
+                    payload = JSONObject().apply {
+                        put("missionId", missionId)
+                        put("alertId", alert.alertId)
+                        put("cancelReason", cancelReason.ifBlank { "Cancelled offline by responder" })
+                    },
+                )
+                _actionMessage.value = "Offline: SOS cancellation queued."
+            } else {
+                repository.transitionSosAlert(orgId, missionId, alert.alertId, nextStatus, actor, cancelReason)
+                    .onSuccess { _actionMessage.value = "Alert updated to ${nextStatus.label}." }
+                    .onFailure { _actionMessage.value = it.localizedMessage ?: "SOS update rejected" }
+            }
+        }
+    }
+
+    // --- Edge Gateway & Sensor Integration ---
+
+    fun registerGatewayAndSaveConfig(name: String, endpointUri: String, transport: GatewayTransportKind, bearerToken: String) {
+        val orgId = _activeOrgId.value
+        viewModelScope.launch {
+            preferences.setHardwareGatewayConfig(endpointUri, transport.value)
+            if (bearerToken.isNotBlank()) tokenStorage.saveGatewayToken(bearerToken)
+            if (orgId.isNotBlank()) {
+                repository.upsertGatewayDevice(
+                    GatewayDevice(
+                        orgId = orgId,
+                        name = name.ifBlank { "Field Sensor Hub" },
+                        transportType = transport.value,
+                        endpointUri = endpointUri.trim(),
+                        status = "unverified",
+                        lastHeartbeatMillis = System.currentTimeMillis(),
+                    )
+                )
+            }
+            _actionMessage.value = "Gateway endpoint & Keystore encrypted token saved."
+        }
+    }
+
+    fun pollConfiguredGateway() {
+        val cfg = settings.value
+        val orgId = _activeOrgId.value
+        val missionId = _activeMissionId.value
+        if (orgId.isBlank() || missionId.isBlank()) {
+            _actionMessage.value = "Join an active Mission first."
+            return
+        }
+        val kind = GatewayTransportKind.entries.firstOrNull { it.value == cfg.gatewayTransportType }
+            ?: GatewayTransportKind.HTTP_TLS
+        val gwConfig = GatewayTransportConfig(
+            transportKind = kind,
+            endpointUri = cfg.hardwareGatewayUrl,
+            orgId = orgId,
+            missionId = missionId,
+            bearerToken = tokenStorage.getGatewayToken(),
+        )
+        viewModelScope.launch {
+            val client = when (kind) {
+                GatewayTransportKind.HTTP_TLS -> httpGateway
+                GatewayTransportKind.WEBSOCKET_TLS -> wsGateway
+                GatewayTransportKind.MQTT_TLS -> mqttGateway
+            }
+            if (kind == GatewayTransportKind.WEBSOCKET_TLS) {
+                client.connect(gwConfig)
+                    .onSuccess {
+                        _gatewayStatusText.value = "WebSocket TLS Stream Active"
+                        _actionMessage.value = "Connected to WebSocket Edge Gateway."
+                    }
+                    .onFailure {
+                        _gatewayStatusText.value = "WebSocket Error: ${it.localizedMessage}"
+                        _actionMessage.value = it.localizedMessage
+                    }
+                return@launch
+            }
+            client.pollOnce(gwConfig, currentUserId)
+                .onSuccess { events ->
+                    events.forEach { repository.ingestValidatedSensorEvent(it) }
+                    _gatewayStatusText.value = if (events.isEmpty()) "Connected • 0 new events" else "Ingested ${events.size} sensor event(s)"
+                    _actionMessage.value = _gatewayStatusText.value
+                }
+                .onFailure {
+                    _gatewayStatusText.value = it.localizedMessage ?: "Gateway unavailable"
+                    _actionMessage.value = _gatewayStatusText.value
+                }
+        }
+    }
+
+    fun validateAndIngestGatewayJson(rawJson: String) {
+        val orgId = _activeOrgId.value
+        val missionId = _activeMissionId.value
+        if (orgId.isBlank() || missionId.isBlank()) {
+            _actionMessage.value = "Active Mission required before ingesting JSON payload."
+            return
+        }
+        viewModelScope.launch {
+            val results = sensorParser.parseBatchJsonEvents(rawJson, orgId, missionId, currentUserId)
+            var accepted = 0
+            var firstError: String? = null
+            for (r in results) {
+                r.onSuccess { ev ->
+                    if (repository.ingestValidatedSensorEvent(ev).isSuccess) accepted++
+                }.onFailure {
+                    if (firstError == null) firstError = it.localizedMessage
+                }
+            }
+            _actionMessage.value = if (accepted > 0) {
+                "Validated & ingested $accepted SensorEvent(s)."
+            } else {
+                firstError ?: "No valid SensorEvent v1.0.0 entries found."
+            }
+        }
+    }
+
+    fun logDetectionObservation(event: SensorEvent, notes: String, outcome: String) {
+        val orgId = _activeOrgId.value
+        val missionId = _activeMissionId.value
+        viewModelScope.launch {
+            if (networkMonitor.refreshNow() == NetworkState.OFFLINE) {
+                syncManager.enqueuePendingOperation(
+                    orgId = orgId,
+                    entityType = "sensor_observation",
+                    payload = JSONObject().apply {
+                        put("missionId", missionId)
+                        put("sensorEventId", event.eventId)
+                        put("sensorId", event.sensorId)
+                        put("notes", notes)
+                        put("outcome", outcome)
+                    },
+                )
+                _actionMessage.value = "Offline: field observation queued."
+            } else {
+                repository.logDetectionObservation(
+                    DetectionObservation(
+                        orgId = orgId,
+                        missionId = missionId,
+                        sensorEventId = event.eventId,
+                        sensorId = event.sensorId,
+                        notes = notes,
+                        outcome = outcome,
+                    )
+                ).onSuccess { _actionMessage.value = "Observation saved." }
+                    .onFailure { _actionMessage.value = it.localizedMessage ?: "Observation failed" }
+            }
+        }
+    }
+
+    // --- Location, Radar, Map, Offline & Settings ---
+
+    fun updateVoluntaryLocationSharing(enabled: Boolean) {
+        viewModelScope.launch {
+            preferences.setLocationConsentEnabled(enabled)
+            repository.updateUserProfileWorkspace(locationSharingEnabled = enabled)
+            if (enabled) {
+                locationController.startTracking(useForegroundService = true)
+            } else {
+                locationController.stopTracking()
+            }
+        }
+    }
+
+    fun updateProfileDetails(displayName: String, callsign: String, phoneOptional: String) {
+        viewModelScope.launch {
+            repository.updateUserProfileWorkspace(
+                displayName = displayName,
+                callsign = callsign,
+                phoneOptional = phoneOptional,
+            ).onSuccess { _actionMessage.value = "Responder profile updated." }
+                .onFailure { _actionMessage.value = it.localizedMessage ?: "Profile update failed" }
+        }
+    }
+
+    fun setDevDemoMode(enabled: Boolean) {
+        viewModelScope.launch { preferences.setDevDemoMode(enabled) }
+    }
+
+    fun setRadarRangeMeters(range: Double) {
+        viewModelScope.launch { preferences.setRadarRangeMeters(range) }
+    }
+
+    fun setNorthUpMode(northUp: Boolean) {
+        viewModelScope.launch { preferences.setNorthUpMode(northUp) }
     }
 
     fun setDarkThemeEnabled(dark: Boolean) {
@@ -543,1094 +1059,110 @@ class SurakshaViewModel(
         viewModelScope.launch { preferences.setLanguageCode(code) }
     }
 
-    fun setHardwareGatewayUrl(url: String) {
+    fun setOfflineMapMode(enabled: Boolean) {
+        viewModelScope.launch { preferences.setOfflineMapMode(enabled) }
+    }
+
+    fun dismissBatteryOptimizationPrompt() {
+        viewModelScope.launch { preferences.setBatteryOptPromptDismissed(true) }
+    }
+
+    fun updateMapLayers(newLayers: MapLayerConfig) {
+        _mapLayers.value = newLayers
+    }
+
+    fun searchMapPlaces(query: String) {
         viewModelScope.launch {
-            preferences.setHardwareGatewayUrl(url)
-            _actionStatusMessage.value = if (url.isBlank()) "Edge gateway URL cleared." else "Saved edge gateway URL."
+            val allowNet = !settings.value.offlineMapMode && networkMonitor.refreshNow() != NetworkState.OFFLINE
+            _mapSearchResults.value = tileManager.searchLocation(query, allowNet)
         }
     }
 
-    fun setHardwareGatewayToken(token: String) {
-        viewModelScope.launch {
-            preferences.setHardwareGatewayToken(token)
-            _actionStatusMessage.value = if (token.isBlank()) "Gateway Bearer token cleared." else "Saved gateway Bearer token."
-        }
+    fun clearMapSearch() {
+        _mapSearchResults.value = emptyList()
     }
 
-    fun setSlamGatewayUrl(url: String) {
-        viewModelScope.launch {
-            preferences.setSlamGatewayUrl(url)
-            _actionStatusMessage.value = if (url.isBlank()) "External SLAM URL cleared." else "Saved external SLAM URL."
-        }
-    }
-
-    fun setCustomTileServerUrl(url: String) {
-        viewModelScope.launch {
-            preferences.setCustomTileServerUrl(url)
-            _actionStatusMessage.value = if (url.isBlank()) "Custom tile server URL cleared." else "Saved custom tile server URL."
-        }
-    }
-
-    fun setNotificationsEnabled(enabled: Boolean) {
-        viewModelScope.launch {
-            preferences.setNotificationsEnabled(enabled)
-            val orgId = _activeOrgId.value
-            if (orgId.isNotBlank()) {
-                SurakshaMessagingService.registerCurrentDeviceToken(appContext, orgId, enabled)
-            }
-            _actionStatusMessage.value = if (enabled) "SOS push notifications enabled." else "SOS push notifications muted for this device."
-        }
-    }
-
-    fun startOfflineRegionDownload(region: OfflineMapRegionEntity) {
-        if (networkState.value == NetworkState.OFFLINE) {
-            _actionStatusMessage.value = "Cannot download tiles while device is offline."
-            return
-        }
-        tileManager.startRegionDownload(
-            scope = viewModelScope,
-            region = region,
-            layerKind = if (_mapLayers.value.showTerrain) "topo" else "osm",
-            customTileTemplateUrl = settings.value.customTileServerUrl,
-        )
-        _actionStatusMessage.value = "Downloading policy-compliant map tiles for ${region.title}..."
+    fun startOfflineRegionDownload(region: OfflineMapRegionEntity, layerKind: String = "topo") {
+        tileManager.startRegionDownload(viewModelScope, region, layerKind, settings.value.customTileServerUrl)
     }
 
     fun cancelOfflineRegionDownload(regionId: String) {
         tileManager.cancelRegionDownload(regionId)
-        _actionStatusMessage.value = "Region download paused; partial tiles kept for resume."
     }
 
     fun deleteOfflineRegion(regionId: String) {
-        viewModelScope.launch {
-            tileManager.deleteRegionCache(regionId)
-            _actionStatusMessage.value = "Deleted local cached map tiles for region."
-        }
-    }
-
-    fun computeRouteToSite(targetLat: Double, targetLon: Double) {
-        val fix = locationFixState.value as? LocationFixState.Available
-        val fallbackTeam = (rescueTeamsState.value as? DataUiState.Success)?.data
-            ?.firstOrNull { it.locationSharingOptIn && it.hasValidLocation }
-        val fromLat = fix?.latitude ?: fallbackTeam?.latitude ?: 28.6139
-        val fromLon = fix?.longitude ?: fallbackTeam?.longitude ?: 77.2090
-        val blocked = (blockedRoadsState.value as? DataUiState.Success)?.data.orEmpty()
-        val allowNet = !settings.value.offlineMapMode && networkState.value != NetworkState.OFFLINE
-        viewModelScope.launch {
-            val route = tileManager.computeRescueRoute(
-                fromLat = fromLat,
-                fromLon = fromLon,
-                toLat = targetLat,
-                toLon = targetLon,
-                blockedRoads = blocked,
-                allowNetwork = allowNet,
-            )
-            _activeRoute.value = route
-            _actionStatusMessage.value = "${route.sourceLabel}: ${String.format(Locale.US, "%.1f", route.distanceKm)} km"
-        }
-    }
-
-    fun clearActiveRoute() {
-        _activeRoute.value = null
-    }
-
-    fun createOrganization(orgName: String, orgCode: String, region: String) {
-        viewModelScope.launch {
-            val res = repository.createOrganization(
-                orgName = orgName,
-                orgCode = orgCode,
-                region = region,
-                creatorDisplayName = initialDisplayName,
-                creatorCallsign = "CMD-01",
-            )
-            res.onSuccess { newOrgId ->
-                _activeOrgId.value = newOrgId
-                preferences.setActiveOrgId(newOrgId)
-                SurakshaMessagingService.registerCurrentDeviceToken(appContext, newOrgId, settings.value.notificationsEnabled)
-                _actionStatusMessage.value = "Created organization $orgName ($newOrgId) as Org Admin."
-            }.onFailure {
-                _actionStatusMessage.value = it.localizedMessage ?: "Failed to create organization."
-            }
-        }
-    }
-
-    fun switchOrganization(targetOrgId: String) {
-        viewModelScope.launch {
-            val res = repository.switchActiveOrganization(targetOrgId)
-            res.onSuccess { switched ->
-                _activeOrgId.value = switched
-                preferences.setActiveOrgId(switched)
-                SurakshaMessagingService.registerCurrentDeviceToken(appContext, switched, settings.value.notificationsEnabled)
-                _actionStatusMessage.value = "Switched command workspace to $switched."
-            }.onFailure {
-                _actionStatusMessage.value = it.localizedMessage ?: "Failed to switch organization."
-            }
-        }
-    }
-
-    fun generateOrgInvite(
-        inviteCode: String,
-        defaultRole: String,
-        expiresInHours: Long = 48L,
-        maxUses: Long = 25L,
-    ) {
-        val orgId = _activeOrgId.value
-        if (orgId.isBlank()) return
-        viewModelScope.launch {
-            val res = repository.createOrgInvite(orgId, inviteCode, defaultRole, expiresInHours, maxUses)
-            _actionStatusMessage.value = res.fold(
-                onSuccess = { code -> "Invite code $code active ($defaultRole, ${expiresInHours}h)." },
-                onFailure = { it.localizedMessage ?: "Failed to create invite (Admin required)." }
-            )
-        }
-    }
-
-    fun revokeOrgInvite(inviteCode: String) {
-        val orgId = _activeOrgId.value
-        if (orgId.isBlank()) return
-        viewModelScope.launch {
-            val res = repository.revokeOrgInvite(orgId, inviteCode)
-            _actionStatusMessage.value = res.fold(
-                onSuccess = { "Revoked invite code $inviteCode." },
-                onFailure = { it.localizedMessage ?: "Failed to revoke invite." }
-            )
-        }
-    }
-
-    fun joinOrganization(targetOrgId: String, inviteCode: String, callsign: String) {
-        viewModelScope.launch {
-            val res = repository.joinOrganizationWithInvite(targetOrgId, inviteCode, initialDisplayName, callsign)
-            res.onSuccess { joinedId ->
-                _activeOrgId.value = joinedId
-                preferences.setActiveOrgId(joinedId)
-                SurakshaMessagingService.registerCurrentDeviceToken(appContext, joinedId, settings.value.notificationsEnabled)
-                _actionStatusMessage.value = "Joined organization $joinedId."
-            }.onFailure {
-                _actionStatusMessage.value = it.localizedMessage ?: "Failed to join organization."
-            }
-        }
-    }
-
-    fun updateMemberRole(memberUid: String, newRole: OrgRole) {
-        val orgId = _activeOrgId.value
-        if (orgId.isBlank()) return
-        viewModelScope.launch {
-            val res = repository.updateMemberRole(orgId, memberUid, newRole)
-            _actionStatusMessage.value = res.fold(
-                onSuccess = { "Updated member role to ${newRole.label}." },
-                onFailure = { it.localizedMessage ?: "Role change rejected (Org Admin only)." }
-            )
-        }
-    }
-
-    fun updateMyAvailability(availability: String) {
-        val orgId = _activeOrgId.value
-        if (orgId.isBlank()) return
-        viewModelScope.launch {
-            val res = repository.updateMemberAvailability(orgId, availability)
-            _actionStatusMessage.value = res.fold(
-                onSuccess = { "Duty status set to $availability." },
-                onFailure = { it.localizedMessage ?: "Failed to update availability." }
-            )
-        }
-    }
-
-    fun migrateLegacyData() {
-        val orgId = _activeOrgId.value
-        if (orgId.isBlank()) return
-        viewModelScope.launch {
-            val res = repository.migrateLegacyPersonalDataToOrg(orgId)
-            _actionStatusMessage.value = res.fold(
-                onSuccess = { count -> if (count == 0) "No legacy personal records found to migrate." else "Migrated $count legacy records into organization." },
-                onFailure = { it.localizedMessage ?: "Legacy migration failed." }
-            )
-        }
-    }
-
-    fun seedDemoDataset() {
-        val orgId = _activeOrgId.value
-        if (orgId.isBlank()) return
-        viewModelScope.launch {
-            val res = repository.seedDemoDatasetForce(orgId)
-            _actionStatusMessage.value = res.fold(
-                onSuccess = { "Synthetic Demo Mode records added to org." },
-                onFailure = { it.localizedMessage ?: "Failed to seed demo data." }
-            )
-        }
-    }
-
-    fun updateVoluntaryLocationSharing(enabled: Boolean) {
-        viewModelScope.launch {
-            preferences.setLocationConsentEnabled(enabled)
-            if (enabled) {
-                if (!locationController.hasLocationPermission()) {
-                    preferences.setLocationConsentEnabled(false)
-                    SurakshaLocationBus.emit(LocationFixState.PermissionDenied())
-                    _actionStatusMessage.value = "Grant location permission before enabling continuous GPS."
-                    return@launch
-                }
-                if (!locationController.isDeviceLocationEnabled()) {
-                    preferences.setLocationConsentEnabled(false)
-                    SurakshaLocationBus.emit(LocationFixState.GpsDisabled())
-                    _actionStatusMessage.value = "Enable device GPS / Location services first."
-                    return@launch
-                }
-                locationController.startTracking(useForegroundService = true)
-            } else {
-                locationController.stopTracking()
-            }
-
-            val res = repository.updateLocationSharingPreference(enabled)
-            _actionStatusMessage.value = res.fold(
-                onSuccess = {
-                    if (enabled) "Continuous foreground GPS tracking enabled." else "GPS tracking stopped and location sharing revoked."
-                },
-                onFailure = { it.localizedMessage ?: "Could not update sharing preference." }
-            )
-        }
-    }
-
-    private suspend fun pushDeviceLocationToTeam(fix: LocationFixState.Available) {
-        val orgId = _activeOrgId.value.takeIf { it.isNotBlank() } ?: return
-        val teams = (rescueTeamsState.value as? DataUiState.Success)?.data ?: return
-        val myTeam = teams.firstOrNull { it.leaderUid == currentUserId && it.locationSharingOptIn }
-            ?: teams.firstOrNull { it.userId == currentUserId && it.locationSharingOptIn }
-            ?: return
-
-        repository.updateTeamLocation(
-            orgId = orgId,
-            teamId = myTeam.id,
-            optIn = true,
-            hasValidLocation = true,
-            latitude = fix.latitude,
-            longitude = fix.longitude,
-            accuracyMeters = fix.accuracyMeters.toDouble(),
-            timestampMillis = fix.timestampMillis,
-            unavailableReason = "",
-            batteryPercent = fix.batteryPercent.toLong(),
-            connectionStatus = if (networkState.value == NetworkState.OFFLINE) "offline" else "online",
-        )
-    }
-
-    fun registerRescueTeam(
-        teamCode: String,
-        teamName: String,
-        memberCount: Long,
-        activeCount: Long,
-        status: String,
-        locationSharingOptIn: Boolean,
-    ) {
-        val orgId = _activeOrgId.value
-        if (orgId.isBlank()) return
-        val fix = locationFixState.value as? LocationFixState.Available
-        val hasValid = locationSharingOptIn && fix != null
-        val reason = when {
-            !locationSharingOptIn -> "Location sharing disabled"
-            fix == null -> locationFixReasonLabel(locationFixState.value)
-            else -> ""
-        }
-        viewModelScope.launch {
-            val team = RescueTeam(
-                orgId = orgId,
-                userId = currentUserId,
-                leaderUid = currentUserId,
-                teamCode = teamCode,
-                teamName = teamName,
-                memberCount = memberCount,
-                activeCount = activeCount,
-                status = status,
-                locationSharingOptIn = locationSharingOptIn,
-                hasValidLocation = hasValid,
-                latitude = fix?.latitude ?: 0.0,
-                longitude = fix?.longitude ?: 0.0,
-                accuracyMeters = fix?.accuracyMeters?.toDouble() ?: 0.0,
-                locationTimestampMillis = fix?.timestampMillis ?: 0L,
-                locationUnavailableReason = reason,
-                batteryPercent = SurakshaLocationController.readBatteryPercent(appContext).toLong(),
-                connectionStatus = if (networkState.value == NetworkState.OFFLINE) "offline" else "online",
-                isSynthetic = settings.value.demoModeEnabled,
-            )
-            if (networkState.value == NetworkState.OFFLINE) {
-                val docId = "team_${UUID.randomUUID().toString().replace("-", "").take(12)}"
-                syncManager.enqueuePendingOperation(
-                    orgId = orgId,
-                    entityType = OP_CREATE_TEAM,
-                    operationId = docId,
-                    payload = JSONObject().apply {
-                        put("docId", docId)
-                        put("teamCode", team.teamCode)
-                        put("teamName", team.teamName)
-                        put("memberCount", team.memberCount)
-                        put("activeCount", team.activeCount)
-                        put("status", team.status)
-                        put("locationSharingOptIn", team.locationSharingOptIn)
-                        put("isSynthetic", team.isSynthetic)
-                    }
-                )
-                _actionStatusMessage.value = "Offline: Team $teamCode queued for automatic sync."
-                return@launch
-            }
-            val res = repository.createRescueTeam(orgId, team)
-            _actionStatusMessage.value = res.fold(
-                onSuccess = { "Team $teamCode saved to Firestore." },
-                onFailure = { it.localizedMessage ?: "Failed to register team." }
-            )
-        }
-    }
-
-    fun toggleTeamLocationSharing(team: RescueTeam, optIn: Boolean) {
-        val orgId = _activeOrgId.value
-        if (orgId.isBlank()) return
-        val fix = locationFixState.value as? LocationFixState.Available
-        val valid = optIn && fix != null
-        val reason = when {
-            !optIn -> "Location sharing paused by operator"
-            fix == null -> locationFixReasonLabel(locationFixState.value)
-            else -> ""
-        }
-        viewModelScope.launch {
-            val res = repository.updateTeamLocation(
-                orgId = orgId,
-                teamId = team.id,
-                optIn = optIn,
-                hasValidLocation = valid,
-                latitude = fix?.latitude ?: 0.0,
-                longitude = fix?.longitude ?: 0.0,
-                accuracyMeters = fix?.accuracyMeters?.toDouble() ?: 0.0,
-                timestampMillis = fix?.timestampMillis ?: 0L,
-                unavailableReason = reason,
-                batteryPercent = SurakshaLocationController.readBatteryPercent(appContext).toLong(),
-                connectionStatus = if (networkState.value == NetworkState.OFFLINE) "offline" else "online",
-            )
-            _actionStatusMessage.value = res.fold(
-                onSuccess = {
-                    when {
-                        !optIn -> "${team.teamCode} location sharing disabled."
-                        valid -> "${team.teamCode} updated with live device GPS."
-                        else -> "${team.teamCode} opted in, but ${reason.lowercase(Locale.US)}."
-                    }
-                },
-                onFailure = { it.localizedMessage ?: "Failed to update team location." }
-            )
-        }
-    }
-
-    fun registerDisasterLocation(
-        name: String,
-        region: String,
-        hazardType: String,
-        severity: String,
-        latitude: Double,
-        longitude: Double,
-        verificationStatus: String,
-        dataSource: String,
-    ) {
-        val orgId = _activeOrgId.value
-        if (orgId.isBlank()) return
-        viewModelScope.launch {
-            val loc = RescueLocation(
-                orgId = orgId,
-                userId = currentUserId,
-                name = name,
-                region = region,
-                hazardType = hazardType,
-                severity = severity,
-                latitude = latitude,
-                longitude = longitude,
-                verificationStatus = verificationStatus,
-                dataSource = dataSource,
-                isSynthetic = settings.value.demoModeEnabled,
-            )
-            if (networkState.value == NetworkState.OFFLINE) {
-                val docId = "loc_${UUID.randomUUID().toString().replace("-", "").take(12)}"
-                syncManager.enqueuePendingOperation(
-                    orgId = orgId,
-                    entityType = OP_CREATE_LOCATION,
-                    operationId = docId,
-                    payload = JSONObject().apply {
-                        put("docId", docId)
-                        put("name", loc.name)
-                        put("region", loc.region)
-                        put("hazardType", loc.hazardType)
-                        put("severity", loc.severity)
-                        put("latitude", loc.latitude)
-                        put("longitude", loc.longitude)
-                        put("verificationStatus", loc.verificationStatus)
-                        put("dataSource", loc.dataSource)
-                        put("isSynthetic", loc.isSynthetic)
-                    }
-                )
-                _actionStatusMessage.value = "Offline: Disaster site '$name' queued for sync."
-                return@launch
-            }
-            val res = repository.createRescueLocation(orgId, loc)
-            _actionStatusMessage.value = res.fold(
-                onSuccess = { "Disaster site '$name' saved." },
-                onFailure = { it.localizedMessage ?: "Failed to register location." }
-            )
-        }
-    }
-
-    fun logPresenceObservation(
-        sectorLabel: String,
-        signalType: String,
-        minCount: Long,
-        maxCount: Long,
-        confidence: Long,
-        dataSource: String,
-    ) {
-        val orgId = _activeOrgId.value
-        if (orgId.isBlank()) return
-        val fix = locationFixState.value as? LocationFixState.Available
-        viewModelScope.launch {
-            val res = repository.createPresenceSignal(
-                orgId = orgId,
-                signal = PresenceSignal(
-                    orgId = orgId,
-                    userId = currentUserId,
-                    locationId = "sector_field",
-                    sectorLabel = sectorLabel,
-                    signalType = signalType,
-                    sourceKind = if (settings.value.demoModeEnabled) "simulated" else "hardware",
-                    deviceId = "manual-field-log",
-                    calibrationStatus = "nominal",
-                    sensorHealth = "healthy",
-                    latitude = fix?.latitude ?: 0.0,
-                    longitude = fix?.longitude ?: 0.0,
-                    hasCoordinates = fix != null,
-                    estimatedMinCount = minCount,
-                    estimatedMaxCount = maxCount,
-                    confidencePercent = confidence,
-                    verificationStatus = "estimated",
-                    dataSource = dataSource,
-                    observationTimestampMillis = System.currentTimeMillis(),
-                    isSynthetic = settings.value.demoModeEnabled,
-                )
-            )
-            _actionStatusMessage.value = res.fold(
-                onSuccess = { "Estimated presence signal logged (requires field verification)." },
-                onFailure = { it.localizedMessage ?: "Failed to log presence signal." }
-            )
-        }
-    }
-
-    fun reviewPresenceSignal(signal: PresenceSignal, newStatus: String, notes: String) {
-        val orgId = _activeOrgId.value
-        if (orgId.isBlank()) return
-        viewModelScope.launch {
-            val res = repository.reviewPresenceSignal(orgId, signal, newStatus, notes)
-            _actionStatusMessage.value = res.fold(
-                onSuccess = { "Signal marked $newStatus." },
-                onFailure = { it.localizedMessage ?: "Signal update rejected." }
-            )
-        }
-    }
-
-    fun findDuplicateRegistryMatch(title: String, locationName: String): RescueRegistryEntry? {
-        val existing = (rescueRegistryState.value as? DataUiState.Success)?.data ?: return null
-        val normTitle = title.trim().lowercase(Locale.US)
-        val normLoc = locationName.trim().lowercase(Locale.US)
-        return existing.firstOrNull {
-            it.rescueStatus != "resolved" &&
-                it.title.trim().lowercase(Locale.US) == normTitle &&
-                it.locationName.trim().lowercase(Locale.US) == normLoc
-        }
-    }
-
-    fun createRegistryEntry(
-        category: String,
-        title: String,
-        locationName: String,
-        details: String,
-        sensitiveContact: String,
-        verificationStatus: String,
-        informationSource: String,
-        photoUriLocal: String = "",
-        photoConsentGranted: Boolean = false,
-        duplicateOfId: String = "",
-        medicalCategory: String = "",
-        medicalUrgency: String = "routine",
-        assignedMedicalTeam: String = "",
-        linkedIncidentId: String = "",
-    ) {
-        val orgId = _activeOrgId.value
-        if (orgId.isBlank()) return
-        val fix = locationFixState.value as? LocationFixState.Available
-        viewModelScope.launch {
-            val entry = RescueRegistryEntry(
-                orgId = orgId,
-                userId = currentUserId,
-                category = category,
-                title = title,
-                locationName = locationName,
-                latitude = fix?.latitude ?: 0.0,
-                longitude = fix?.longitude ?: 0.0,
-                hasCoordinates = fix != null,
-                details = details,
-                sensitiveContactMasked = sensitiveContact,
-                photoUriLocal = photoUriLocal,
-                photoConsentGranted = photoConsentGranted,
-                rescueStatus = "open",
-                verificationStatus = if (duplicateOfId.isNotBlank()) "duplicate" else verificationStatus,
-                informationSource = informationSource,
-                verificationNotes = if (duplicateOfId.isNotBlank()) "Flagged possible duplicate of $duplicateOfId" else "Logged by authenticated responder.",
-                duplicateOfId = duplicateOfId,
-                medicalCategory = medicalCategory,
-                medicalUrgency = medicalUrgency,
-                assignedMedicalTeam = assignedMedicalTeam,
-                linkedIncidentId = linkedIncidentId,
-                isSynthetic = settings.value.demoModeEnabled,
-            )
-            if (networkState.value == NetworkState.OFFLINE) {
-                val docId = "reg_${UUID.randomUUID().toString().replace("-", "").take(12)}"
-                syncManager.enqueuePendingOperation(
-                    orgId = orgId,
-                    entityType = OP_CREATE_REGISTRY,
-                    operationId = docId,
-                    payload = JSONObject().apply {
-                        put("docId", docId)
-                        put("category", entry.category)
-                        put("title", entry.title)
-                        put("locationName", entry.locationName)
-                        put("details", entry.details)
-                        put("sensitiveContactMasked", entry.sensitiveContactMasked)
-                        put("verificationStatus", entry.verificationStatus)
-                        put("informationSource", entry.informationSource)
-                        put("medicalCategory", entry.medicalCategory)
-                        put("medicalUrgency", entry.medicalUrgency)
-                        put("assignedMedicalTeam", entry.assignedMedicalTeam)
-                        put("linkedIncidentId", entry.linkedIncidentId)
-                        put("isSynthetic", entry.isSynthetic)
-                    }
-                )
-                _actionStatusMessage.value = "Offline: Registry record queued for auto-sync."
-                return@launch
-            }
-            val res = repository.createRegistryEntry(orgId, entry)
-            _actionStatusMessage.value = res.fold(
-                onSuccess = { "Registry record saved to Firestore." },
-                onFailure = { it.localizedMessage ?: "Failed to save registry record." }
-            )
-        }
-    }
-
-    fun advanceRegistryEntry(
-        entry: RescueRegistryEntry,
-        newRescueStatus: String,
-        newVerificationStatus: String,
-        verificationNote: String,
-    ) {
-        val orgId = _activeOrgId.value
-        if (orgId.isBlank()) return
-        viewModelScope.launch {
-            val res = repository.updateRegistryEntry(
-                orgId,
-                entry.copy(
-                    rescueStatus = newRescueStatus,
-                    verificationStatus = newVerificationStatus,
-                    verificationNotes = verificationNote,
-                )
-            )
-            _actionStatusMessage.value = res.fold(
-                onSuccess = { "Registry entry updated." },
-                onFailure = { it.localizedMessage ?: "Failed to update registry entry." }
-            )
-        }
-    }
-
-    fun createSosIncident(
-        teamCode: String,
-        priority: String,
-        description: String,
-        includeGps: Boolean,
-    ) {
-        val orgId = _activeOrgId.value
-        if (orgId.isBlank()) return
-        val fix = if (includeGps) locationFixState.value as? LocationFixState.Available else null
-        viewModelScope.launch {
-            val incident = SosIncident(
-                orgId = orgId,
-                senderUid = currentUserId,
-                senderName = initialDisplayName,
-                teamCode = teamCode,
-                priority = priority,
-                description = description,
-                hasLocation = fix != null,
-                latitude = fix?.latitude ?: 0.0,
-                longitude = fix?.longitude ?: 0.0,
-                accuracyMeters = fix?.accuracyMeters?.toDouble() ?: 0.0,
-                isSynthetic = settings.value.demoModeEnabled,
-            )
-            if (networkState.value == NetworkState.OFFLINE) {
-                val docId = "sos_${UUID.randomUUID().toString().replace("-", "").take(12)}"
-                syncManager.enqueuePendingOperation(
-                    orgId = orgId,
-                    entityType = OP_CREATE_SOS,
-                    operationId = docId,
-                    payload = JSONObject().apply {
-                        put("docId", docId)
-                        put("teamCode", incident.teamCode)
-                        put("priority", incident.priority)
-                        put("description", incident.description)
-                        put("hasLocation", incident.hasLocation)
-                        put("latitude", incident.latitude)
-                        put("longitude", incident.longitude)
-                        put("accuracyMeters", incident.accuracyMeters)
-                        put("isSynthetic", incident.isSynthetic)
-                    }
-                )
-                _actionStatusMessage.value = "Offline: SOS incident ($docId) queued locally (Pending Delivery). Requires connectivity for server save."
-                return@launch
-            }
-            val res = repository.createSosIncident(orgId, incident)
-            _actionStatusMessage.value = res.fold(
-                onSuccess = { id -> "SOS Incident $id saved to Firestore dispatch (server ACK)." },
-                onFailure = { it.localizedMessage ?: "Failed to send SOS incident." }
-            )
-        }
-    }
-
-    fun transitionSosIncident(
-        incident: SosIncident,
-        targetStatus: SosIncidentStatus,
-        assignedTeamCode: String = incident.assignedTeamCode,
-        note: String = "",
-    ) {
-        val orgId = _activeOrgId.value
-        if (orgId.isBlank()) return
-        viewModelScope.launch {
-            val res = repository.transitionSosIncident(
-                orgId = orgId,
-                incident = incident,
-                targetStatus = targetStatus,
-                assignedTeamCode = assignedTeamCode,
-                note = note,
-            )
-            _actionStatusMessage.value = res.fold(
-                onSuccess = { "SOS ${incident.incidentId} transitioned to ${targetStatus.label}." },
-                onFailure = { it.localizedMessage ?: "SOS transition denied." }
-            )
-        }
-    }
-
-    fun createMission(
-        title: String,
-        description: String,
-        assignedTeamCode: String,
-        priority: String,
-        targetLatitude: Double,
-        targetLongitude: Double,
-        linkedIncidentId: String = "",
-    ) {
-        val orgId = _activeOrgId.value
-        if (orgId.isBlank()) return
-        viewModelScope.launch {
-            val res = repository.createMission(
-                orgId = orgId,
-                mission = RescueMission(
-                    orgId = orgId,
-                    title = title,
-                    description = description,
-                    linkedIncidentId = linkedIncidentId,
-                    assignedTeamCode = assignedTeamCode,
-                    priority = priority,
-                    status = "planned",
-                    targetLatitude = targetLatitude,
-                    targetLongitude = targetLongitude,
-                ),
-            )
-            _actionStatusMessage.value = res.fold(
-                onSuccess = { id -> "Mission $id dispatched ($assignedTeamCode)." },
-                onFailure = { it.localizedMessage ?: "Failed to create mission." }
-            )
-        }
-    }
-
-    fun updateMissionStatus(missionId: String, status: String) {
-        val orgId = _activeOrgId.value
-        if (orgId.isBlank()) return
-        viewModelScope.launch {
-            val res = repository.updateMissionStatus(orgId, missionId, status)
-            _actionStatusMessage.value = res.fold(
-                onSuccess = { "Mission updated to $status." },
-                onFailure = { it.localizedMessage ?: "Mission update failed." }
-            )
-        }
-    }
-
-    fun createBlockedRoad(
-        label: String,
-        latitude: Double,
-        longitude: Double,
-        severity: String,
-        notes: String,
-    ) {
-        val orgId = _activeOrgId.value
-        if (orgId.isBlank()) return
-        viewModelScope.launch {
-            val res = repository.createBlockedRoad(
-                orgId = orgId,
-                marker = BlockedRoadMarker(
-                    orgId = orgId,
-                    label = label,
-                    latitude = latitude,
-                    longitude = longitude,
-                    severity = severity,
-                    active = true,
-                    notes = notes,
-                ),
-            )
-            _actionStatusMessage.value = res.fold(
-                onSuccess = { "Flagged road obstacle '$label'." },
-                onFailure = { it.localizedMessage ?: "Failed to flag road obstacle." }
-            )
-        }
-    }
-
-    fun upsertDroneTelemetry(
-        callsign: String,
-        latitude: Double,
-        longitude: Double,
-        altitudeMeters: Double,
-        batteryPercent: Long,
-        status: String,
-        sourceKind: String = "simulated",
-    ) {
-        val orgId = _activeOrgId.value
-        if (orgId.isBlank()) return
-        viewModelScope.launch {
-            val res = repository.upsertDroneTelemetry(
-                orgId = orgId,
-                drone = DroneTelemetry(
-                    orgId = orgId,
-                    callsign = callsign,
-                    sourceKind = sourceKind,
-                    status = status,
-                    latitude = latitude,
-                    longitude = longitude,
-                    altitudeMeters = altitudeMeters,
-                    batteryPercent = batteryPercent,
-                ),
-            )
-            _actionStatusMessage.value = res.fold(
-                onSuccess = { "Updated UAV telemetry for $callsign ($sourceKind)." },
-                onFailure = { it.localizedMessage ?: "Failed to update UAV telemetry." }
-            )
-        }
-    }
-
-    fun fetchExternalSlamFrame() {
-        val url = settings.value.slamGatewayUrl.ifBlank { settings.value.hardwareGatewayUrl }
-        viewModelScope.launch {
-            val res = SlamGatewayClient.fetchExternalSlamFrame(url, settings.value.hardwareGatewayToken)
-            res.onSuccess { frame ->
-                _isSlamScanning.value = false
-                _slamFrame.value = frame
-                _actionStatusMessage.value = "Loaded live external SLAM grid (${frame.gridSize}x${frame.gridSize}, ${frame.scanCoveragePercent}% covered)."
-            }.onFailure { err ->
-                _actionStatusMessage.value = err.localizedMessage ?: "External SLAM fetch failed."
-            }
-        }
-    }
-
-    fun testEdgeGatewayHealth() {
-        viewModelScope.launch {
-            val adapter = WifiHttpGatewayAdapter(
-                gatewayBaseUrl = settings.value.hardwareGatewayUrl,
-                authToken = settings.value.hardwareGatewayToken,
-            )
-            val res = adapter.checkHealth()
-            _actionStatusMessage.value = res.fold(
-                onSuccess = { it },
-                onFailure = { it.localizedMessage ?: "Edge gateway health check failed." }
-            )
-        }
-    }
-
-    fun registerGatewayDevice() {
-        val orgId = _activeOrgId.value
-        if (orgId.isBlank()) return
-        viewModelScope.launch {
-            val adapter = WifiHttpGatewayAdapter(
-                gatewayBaseUrl = settings.value.hardwareGatewayUrl,
-                authToken = settings.value.hardwareGatewayToken,
-            )
-            val res = adapter.registerDevice("android_${currentUserId.take(8)}", orgId)
-            _actionStatusMessage.value = res.fold(
-                onSuccess = { "Device registered with Edge FastAPI Gateway." },
-                onFailure = { it.localizedMessage ?: "Edge gateway device registration failed." }
-            )
-        }
-    }
-
-    fun pollSensorAdapter(adapterDescriptor: SensorAdapterDescriptor) {
-        val orgId = _activeOrgId.value
-        viewModelScope.launch {
-            val adapter = when (adapterDescriptor.nodeId) {
-                "gw-http-fastapi" -> WifiHttpGatewayAdapter(
-                    gatewayBaseUrl = settings.value.hardwareGatewayUrl,
-                    authToken = settings.value.hardwareGatewayToken,
-                )
-                "hw-ble-gatt-01" -> BleGattSensorAdapter(appContext)
-                else -> SensorArchitectureCatalog.buildAdapters(
-                    context = appContext,
-                    httpGatewayUrl = settings.value.hardwareGatewayUrl,
-                    httpGatewayToken = settings.value.hardwareGatewayToken,
-                ).firstOrNull { it.descriptor.nodeId == adapterDescriptor.nodeId }
-            }
-            if (adapter == null) {
-                _actionStatusMessage.value = "Adapter ${adapterDescriptor.nodeId} unavailable."
-                return@launch
-            }
-            val pollResult = adapter.pollTelemetryPackets()
-            pollResult.onFailure { err ->
-                _actionStatusMessage.value = err.localizedMessage ?: "Sensor poll failed."
-                return@launch
-            }
-            val packets = pollResult.getOrThrow()
-            val fused = SensorFusionProcessor.processPackets(packets, orgId, currentUserId)
-            fused.signals.forEach { sig ->
-                offlineCache.recordSensorSnapshot(
-                    nodeId = sig.deviceId,
-                    sensorType = sig.signalType,
-                    summary = "${sig.sectorLabel} (${sig.verificationStatus}, ${sig.confidencePercent}%)",
-                    confidencePercent = sig.confidencePercent.toInt(),
-                    isSynthetic = sig.isSynthetic,
-                    sourceKind = sig.sourceKind,
-                    calibrationStatus = sig.calibrationStatus,
-                    sensorHealth = sig.sensorHealth,
-                )
-                if (orgId.isNotBlank() && networkState.value != NetworkState.OFFLINE) {
-                    repository.createPresenceSignal(orgId, sig)
-                }
-            }
-            val contradictionMsg = if (fused.contradictionCount > 0) " • ${fused.contradictionCount} contradiction(s)!" else ""
-            _actionStatusMessage.value = "Processed ${fused.signals.size} packet(s) (${fused.deduplicatedCount} deduplicated, ${fused.staleCount} stale$contradictionMsg)."
-        }
+        viewModelScope.launch { tileManager.deleteRegionCache(regionId) }
     }
 
     fun flushOfflineQueueNow() {
         viewModelScope.launch {
             val (synced, failed) = syncManager.flushPendingQueue(forceIgnoreBackoff = true)
-            _actionStatusMessage.value = "Sync complete: $synced uploaded, $failed failed."
+            _actionMessage.value = "Sync complete: $synced delivered, $failed remaining."
         }
     }
 
-    fun retryPendingSyncOperation(operationId: String) {
+    fun registerSensorDevice(device: SensorDevice) {
         viewModelScope.launch {
-            syncManager.retryOperationNow(operationId)
-            _actionStatusMessage.value = "Retried sync operation $operationId."
+            repository.saveSensorDevice(device)
+                .onSuccess { _actionMessage.value = "Sensor station ${device.displayName} saved." }
+                .onFailure { _actionMessage.value = it.localizedMessage ?: "Failed to save sensor device" }
         }
     }
 
-    fun runAiTriage() {
-        val locations = (rescueLocationsState.value as? DataUiState.Success)?.data ?: emptyList()
-        val signals = (presenceSignalsState.value as? DataUiState.Success)?.data ?: emptyList()
-        val teams = (rescueTeamsState.value as? DataUiState.Success)?.data ?: emptyList()
-        val registry = (rescueRegistryState.value as? DataUiState.Success)?.data ?: emptyList()
-        val incidents = (sosIncidentsState.value as? DataUiState.Success)?.data ?: emptyList()
-        val lang = settings.value.languageCode
-
+    fun syncPushRegistration() {
+        val orgId = _activeOrgId.value
         viewModelScope.launch {
-            _aiTriageState.value = AiTriageUiState.Loading
-            val result = aiRepository.generateSituationTriage(
-                locations = locations,
-                signals = signals,
-                teams = teams,
-                registry = registry,
-                incidents = incidents,
-                isDemoMode = settings.value.demoModeEnabled,
-                languageCode = lang,
-            )
-            _aiTriageState.value = result.fold(
-                onSuccess = { report ->
-                    _aiTriageHistory.value = (listOf(report) + _aiTriageHistory.value).take(10)
-                    val orgId = _activeOrgId.value
-                    if (orgId.isNotBlank()) {
-                        repository.logOrgActivity(
-                            orgId = orgId,
-                            actorName = initialDisplayName,
-                            category = "ai",
-                            summary = "Generated Gemini triage (${report.modelUsed}, $lang)",
-                            targetId = "ai_triage_${report.generatedAtMillis}",
-                        )
-                    }
-                    AiTriageUiState.Success(report)
-                },
-                onFailure = { AiTriageUiState.Error(it.localizedMessage ?: "AI triage failed.") }
-            )
+            com.example.data.firebase.SurakshaMessagingService
+                .registerCurrentDeviceToken(appContext, orgId, settings.value.notificationsEnabled)
+                .onSuccess { _actionMessage.value = "FCM emergency dispatch token synced." }
+                .onFailure { _actionMessage.value = "Push token sync skipped: ${it.localizedMessage}" }
         }
     }
 
-    fun askAiQuestion(question: String) {
-        val locations = (rescueLocationsState.value as? DataUiState.Success)?.data ?: emptyList()
-        val signals = (presenceSignalsState.value as? DataUiState.Success)?.data ?: emptyList()
-        val teams = (rescueTeamsState.value as? DataUiState.Success)?.data ?: emptyList()
-        val registry = (rescueRegistryState.value as? DataUiState.Success)?.data ?: emptyList()
-        val incidents = (sosIncidentsState.value as? DataUiState.Success)?.data ?: emptyList()
-        val lang = settings.value.languageCode
-
-        viewModelScope.launch {
-            _aiChatLoading.value = true
-            val result = aiRepository.askOperationalQuestion(
-                question = question,
-                locations = locations,
-                signals = signals,
-                teams = teams,
-                registry = registry,
-                incidents = incidents,
-                isDemoMode = settings.value.demoModeEnabled,
-                languageCode = lang,
-            )
-            _aiChatLoading.value = false
-            _aiChatAnswer.value = result.fold(
-                onSuccess = { it },
-                onFailure = { "AI Error: ${it.localizedMessage ?: "Request failed"}" }
-            )
-        }
+    private fun readBatteryPercent(): Int {
+        val bm = appContext.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager ?: return 100
+        val pct = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+        return if (pct in 0..100) pct else 100
     }
 
-    fun exportOperationalCsvReport() {
-        val locations = (rescueLocationsState.value as? DataUiState.Success)?.data.orEmpty()
-        val incidents = (sosIncidentsState.value as? DataUiState.Success)?.data.orEmpty()
-        val registry = (rescueRegistryState.value as? DataUiState.Success)?.data.orEmpty()
-        val signals = (presenceSignalsState.value as? DataUiState.Success)?.data.orEmpty()
-        val report = buildString {
-            appendLine("# PROJECT SURAKSHA OPERATIONAL EXPORT")
-            appendLine("org_id,${_activeOrgId.value}")
-            appendLine("demo_mode,${settings.value.demoModeEnabled}")
-            appendLine("type,id,title_or_sector,status_or_verification,location,is_synthetic")
-            incidents.forEach {
-                appendLine("SOS_INCIDENT,${it.incidentId},\"${it.description.take(60)}\",${it.status},${it.teamCode},${it.isSynthetic}")
-            }
-            locations.forEach {
-                appendLine("DISASTER_SITE,${it.id},\"${it.name}\",${it.verificationStatus},\"${it.latitude},${it.longitude}\",${it.isSynthetic}")
-            }
-            signals.forEach {
-                appendLine("PRESENCE_SIGNAL,${it.id},\"${it.sectorLabel}\",${it.verificationStatus},${it.sourceKind},${it.isSynthetic}")
-            }
-            registry.forEach {
-                appendLine("REGISTRY_${it.category},${it.id},\"${it.title}\",${it.verificationStatus},\"${it.locationName}\",${it.isSynthetic}")
-            }
-        }
-        _exportedReportText.value = report
-    }
+    private fun CachedMemberLocationEntity.toModel() = MemberLocation(
+        id = userId,
+        userId = userId,
+        orgId = orgId,
+        missionId = missionId,
+        displayName = displayName,
+        callsign = callsign,
+        role = role,
+        sharingEnabled = sharingEnabled,
+        hasValidLocation = hasValidLocation,
+        latitude = latitude,
+        longitude = longitude,
+        accuracyMeters = accuracyMeters,
+        headingDegrees = headingDegrees,
+        headingReliable = headingReliable,
+        batteryPercent = batteryPercent,
+        connectionStatus = "offline",
+        locationTimestampMillis = locationTimestampMillis,
+        unavailableReason = "Offline cached fix",
+    )
 
-    override suspend fun executeOperation(op: PendingSyncOperationEntity): Result<Unit> {
-        val json = JSONObject(op.payloadJson)
-        val docId = json.optString("docId").takeIf { it.isNotBlank() } ?: op.operationId
-        return when (op.entityType) {
-            OP_CREATE_LOCATION -> repository.createRescueLocation(
-                op.orgId,
-                RescueLocation(
-                    orgId = op.orgId,
-                    userId = currentUserId,
-                    name = json.optString("name"),
-                    region = json.optString("region"),
-                    hazardType = json.optString("hazardType"),
-                    severity = json.optString("severity"),
-                    latitude = json.optDouble("latitude"),
-                    longitude = json.optDouble("longitude"),
-                    verificationStatus = json.optString("verificationStatus", "unverified"),
-                    dataSource = json.optString("dataSource"),
-                    isSynthetic = json.optBoolean("isSynthetic", true),
-                ),
-                explicitId = docId,
-            ).map { }
-            OP_CREATE_TEAM -> repository.createRescueTeam(
-                op.orgId,
-                RescueTeam(
-                    orgId = op.orgId,
-                    userId = currentUserId,
-                    leaderUid = currentUserId,
-                    teamCode = json.optString("teamCode"),
-                    teamName = json.optString("teamName"),
-                    memberCount = json.optLong("memberCount", 1L),
-                    activeCount = json.optLong("activeCount", 1L),
-                    status = json.optString("status", "standby"),
-                    locationSharingOptIn = json.optBoolean("locationSharingOptIn", false),
-                    locationUnavailableReason = "Synced from offline queue",
-                    isSynthetic = json.optBoolean("isSynthetic", true),
-                ),
-                explicitId = docId,
-            ).map { }
-            OP_CREATE_REGISTRY -> repository.createRegistryEntry(
-                op.orgId,
-                RescueRegistryEntry(
-                    orgId = op.orgId,
-                    userId = currentUserId,
-                    category = json.optString("category"),
-                    title = json.optString("title"),
-                    locationName = json.optString("locationName"),
-                    details = json.optString("details"),
-                    sensitiveContactMasked = json.optString("sensitiveContactMasked"),
-                    verificationStatus = json.optString("verificationStatus", "reported"),
-                    informationSource = json.optString("informationSource", "Offline Field Queue"),
-                    medicalCategory = json.optString("medicalCategory", ""),
-                    medicalUrgency = json.optString("medicalUrgency", "routine"),
-                    assignedMedicalTeam = json.optString("assignedMedicalTeam", ""),
-                    linkedIncidentId = json.optString("linkedIncidentId", ""),
-                    isSynthetic = json.optBoolean("isSynthetic", true),
-                ),
-                explicitId = docId,
-            ).map { }
-            OP_CREATE_SOS -> repository.createSosIncident(
-                op.orgId,
-                SosIncident(
-                    orgId = op.orgId,
-                    senderUid = currentUserId,
-                    senderName = initialDisplayName,
-                    teamCode = json.optString("teamCode"),
-                    priority = json.optString("priority", "sos"),
-                    description = json.optString("description"),
-                    hasLocation = json.optBoolean("hasLocation", false),
-                    latitude = json.optDouble("latitude", 0.0),
-                    longitude = json.optDouble("longitude", 0.0),
-                    accuracyMeters = json.optDouble("accuracyMeters", 0.0),
-                    isSynthetic = json.optBoolean("isSynthetic", false),
-                ),
-                explicitId = docId,
-            ).map { }
-            else -> Result.failure(IllegalArgumentException("Unknown pending operation ${op.entityType}"))
-        }
-    }
-
-    private fun locationFixReasonLabel(state: LocationFixState): String = when (state) {
-        is LocationFixState.PermissionDenied -> state.reason
-        is LocationFixState.GpsDisabled -> state.reason
-        is LocationFixState.OptedOut -> state.reason
-        is LocationFixState.Searching -> "Acquiring GNSS/network fix"
-        is LocationFixState.Unavailable -> state.reason
-        is LocationFixState.Available -> ""
-    }
-
-    private fun <T> Flow<T>.toUiState(label: String): StateFlow<DataUiState<T>> =
-        this.map<T, DataUiState<T>> { DataUiState.Success(it) }
-            .catch { error ->
-                val firestoreError = generateSequence(error) { it.cause }
-                    .filterIsInstance<FirebaseFirestoreException>()
-                    .firstOrNull()
-                if (firestoreError == null && error is CancellationException) throw error
-                val rootError = firestoreError ?: error
-                Log.w(TAG, "Error observing $label", rootError)
-                emit(DataUiState.Error(rootError.message ?: "Failed to load $label"))
-            }
-            .stateIn(
-                scope = viewModelScope,
-                started = SharingStarted.WhileSubscribed(5000L),
-                initialValue = DataUiState.Loading,
-            )
-
-    override fun onCleared() {
-        networkMonitor.unregister()
-        super.onCleared()
-    }
-
-    private companion object {
-        const val TAG = "SurakshaVM"
-        const val OP_CREATE_LOCATION = "create_location"
-        const val OP_CREATE_TEAM = "create_team"
-        const val OP_CREATE_REGISTRY = "create_registry"
-        const val OP_CREATE_SOS = "create_sos"
-    }
+    private fun CachedSensorEventEntity.toModel() = SensorEvent(
+        id = eventId,
+        eventId = eventId,
+        orgId = orgId,
+        missionId = missionId,
+        sensorId = sensorId,
+        sensorType = sensorType,
+        timestampUtcMillis = timestampUtcMillis,
+        detectionType = detectionType,
+        estimatedRangeMeters = estimatedRangeMeters,
+        estimatedAzimuthDegrees = estimatedAzimuthDegrees,
+        estimatedLatitude = estimatedLatitude,
+        estimatedLongitude = estimatedLongitude,
+        confidence = confidence,
+        signalQuality = signalQuality,
+        sourceDevice = sourceDevice,
+        dataValidity = dataValidity,
+        status = status,
+    )
 }

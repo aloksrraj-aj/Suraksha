@@ -1,6 +1,6 @@
 {
   "name": "Suraksha",
-  "description": "AI-powered disaster rescue coordination, environmental mapping, human presence estimation, and rescue registry platform.",
+  "description": "Civilian humanitarian search-and-rescue hybrid radar, live team tracking, external sensor gateway integration, and mission coordination platform.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

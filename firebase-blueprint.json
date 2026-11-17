@@ -2,264 +2,449 @@
   "entities": {
     "UserProfile": {
       "title": "UserProfile",
-      "description": "Authenticated responder profile and active organization pointer.",
+      "description": "Authenticated responder profile and active workspace pointers.",
       "type": "object",
       "properties": {
         "userId": { "type": "string" },
         "displayName": { "type": "string" },
+        "email": { "type": "string" },
+        "photoUrl": { "type": "string" },
+        "phoneOptional": { "type": "string" },
         "callsign": { "type": "string" },
         "activeOrgId": { "type": "string" },
-        "teamId": { "type": "string" },
-        "teamName": { "type": "string" },
-        "role": { "type": "string", "enum": ["org_admin", "team_leader", "operator", "medic", "observer", "coordinator"] },
+        "activeTeamId": { "type": "string" },
+        "activeMissionId": { "type": "string" },
         "locationSharingEnabled": { "type": "boolean" },
-        "backgroundTrackingEnabled": { "type": "boolean" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["userId", "displayName", "callsign", "activeOrgId", "teamId", "teamName", "role", "locationSharingEnabled", "backgroundTrackingEnabled", "createdAt", "updatedAt"]
+      "required": ["userId", "displayName", "email", "photoUrl", "phoneOptional", "callsign", "activeOrgId", "activeTeamId", "activeMissionId", "locationSharingEnabled", "createdAt", "updatedAt"]
     },
     "RescueOrganization": {
       "title": "RescueOrganization",
-      "description": "Multi-tenant rescue organization workspace.",
+      "description": "Rescue organization controlling member invitation policies and teams.",
       "type": "object",
       "properties": {
         "orgCode": { "type": "string" },
         "orgName": { "type": "string" },
         "region": { "type": "string" },
+        "allowMemberInvites": { "type": "boolean" },
         "createdByUid": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["orgCode", "orgName", "region", "createdByUid", "createdAt", "updatedAt"]
-    },
-    "OrgInvite": {
-      "title": "OrgInvite",
-      "description": "Secure organization join invitation code.",
-      "type": "object",
-      "properties": {
-        "orgId": { "type": "string" },
-        "inviteCode": { "type": "string" },
-        "defaultRole": { "type": "string", "enum": ["operator", "observer"] },
-        "active": { "type": "boolean" },
-        "createdByUid": { "type": "string" },
-        "createdAt": { "type": "string", "format": "date-time" },
-        "updatedAt": { "type": "string", "format": "date-time" }
-      },
-      "required": ["orgId", "inviteCode", "defaultRole", "active", "createdByUid", "createdAt", "updatedAt"]
+      "required": ["orgCode", "orgName", "region", "allowMemberInvites", "createdByUid", "createdAt", "updatedAt"]
     },
     "OrgMember": {
       "title": "OrgMember",
-      "description": "Organization membership and RBAC role assignment.",
+      "description": "Organization member record with RBAC role and REVOKED enforcement.",
       "type": "object",
       "properties": {
         "userId": { "type": "string" },
         "orgId": { "type": "string" },
         "displayName": { "type": "string" },
         "callsign": { "type": "string" },
-        "role": { "type": "string", "enum": ["org_admin", "team_leader", "operator", "medic", "observer"] },
+        "photoUrl": { "type": "string" },
+        "role": { "type": "string", "enum": ["ORGANIZATION_ADMIN", "TEAM_ADMIN", "TEAM_MEMBER", "SENSOR_OPERATOR"] },
         "teamId": { "type": "string" },
+        "status": { "type": "string", "enum": ["ACTIVE", "REVOKED"] },
         "availability": { "type": "string", "enum": ["available", "deployed", "standby", "offline"] },
         "inviteCode": { "type": "string" },
+        "revokedByUid": { "type": "string" },
+        "revokedAtMillis": { "type": "integer" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["userId", "orgId", "displayName", "callsign", "role", "teamId", "availability", "inviteCode", "createdAt", "updatedAt"]
+      "required": ["userId", "orgId", "displayName", "callsign", "photoUrl", "role", "teamId", "status", "availability", "inviteCode", "revokedByUid", "revokedAtMillis", "createdAt", "updatedAt"]
     },
-    "RescueTeam": {
-      "title": "RescueTeam",
-      "description": "Rescue team unit with voluntary GPS tracking, accuracy, and status.",
+    "BlockedMembership": {
+      "title": "BlockedMembership",
+      "description": "Server-enforced block list preventing removed users from rejoining without Admin reinstatement.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "orgId": { "type": "string" },
+        "teamId": { "type": "string" },
+        "missionId": { "type": "string" },
+        "blockedByUid": { "type": "string" },
+        "reason": { "type": "string" },
+        "blockedEmailNormalized": { "type": "string" },
+        "blockedAtMillis": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "orgId", "teamId", "missionId", "blockedByUid", "reason", "blockedEmailNormalized", "blockedAtMillis", "createdAt"]
+    },
+    "Invitation": {
+      "title": "Invitation",
+      "description": "Expiring, limited-use invitation token supporting admin approval workflow.",
       "type": "object",
       "properties": {
         "orgId": { "type": "string" },
-        "userId": { "type": "string" },
-        "leaderUid": { "type": "string" },
+        "inviteCode": { "type": "string" },
+        "assignedRole": { "type": "string", "enum": ["TEAM_MEMBER", "SENSOR_OPERATOR"] },
+        "targetTeamId": { "type": "string" },
+        "targetMissionId": { "type": "string" },
+        "targetEmail": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending_approval", "approved", "rejected", "revoked"] },
+        "active": { "type": "boolean" },
+        "expiresAtMillis": { "type": "integer" },
+        "maxUses": { "type": "integer" },
+        "usedCount": { "type": "integer" },
+        "createdByUid": { "type": "string" },
+        "createdByRole": { "type": "string" },
+        "approvedByUid": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orgId", "inviteCode", "assignedRole", "targetTeamId", "targetMissionId", "targetEmail", "status", "active", "expiresAtMillis", "maxUses", "usedCount", "createdByUid", "createdByRole", "approvedByUid", "createdAt", "updatedAt"]
+    },
+    "RescueTeam": {
+      "title": "RescueTeam",
+      "description": "Rescue team configuration and admin ownership.",
+      "type": "object",
+      "properties": {
+        "orgId": { "type": "string" },
         "teamCode": { "type": "string" },
         "teamName": { "type": "string" },
+        "teamAdminUid": { "type": "string" },
+        "allowMemberInvites": { "type": "boolean" },
         "memberCount": { "type": "integer" },
-        "activeCount": { "type": "integer" },
-        "status": { "type": "string", "enum": ["active", "deployed", "standby", "offline"] },
-        "locationSharingOptIn": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["active", "deployed", "standby", "archived"] },
+        "createdByUid": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orgId", "teamCode", "teamName", "teamAdminUid", "allowMemberInvites", "memberCount", "status", "createdByUid", "createdAt", "updatedAt"]
+    },
+    "TeamMember": {
+      "title": "TeamMember",
+      "description": "Team-level membership with ACTIVE/REVOKED tracking.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "orgId": { "type": "string" },
+        "teamId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "callsign": { "type": "string" },
+        "role": { "type": "string", "enum": ["ORGANIZATION_ADMIN", "TEAM_ADMIN", "TEAM_MEMBER", "SENSOR_OPERATOR"] },
+        "status": { "type": "string", "enum": ["ACTIVE", "REVOKED"] },
+        "revokedByUid": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "orgId", "teamId", "displayName", "callsign", "role", "status", "revokedByUid", "createdAt", "updatedAt"]
+    },
+    "Mission": {
+      "title": "Mission",
+      "description": "Shared operational rescue mission supporting Building (UWB) or Open Area (FMCW) modes.",
+      "type": "object",
+      "properties": {
+        "missionId": { "type": "string" },
+        "orgId": { "type": "string" },
+        "teamId": { "type": "string" },
+        "teamCode": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "environmentMode": { "type": "string", "enum": ["BUILDING_COLLAPSED", "OPEN_AREA"] },
+        "status": { "type": "string", "enum": ["created", "ready", "active", "paused", "completed", "cancelled"] },
+        "separationAlertEnabled": { "type": "boolean" },
+        "separationThresholdMeters": { "type": "number" },
+        "separationDelaySeconds": { "type": "integer" },
+        "centerLatitude": { "type": "number" },
+        "centerLongitude": { "type": "number" },
+        "leaderUid": { "type": "string" },
+        "createdByUid": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["missionId", "orgId", "teamId", "teamCode", "title", "description", "environmentMode", "status", "separationAlertEnabled", "separationThresholdMeters", "separationDelaySeconds", "centerLatitude", "centerLongitude", "leaderUid", "createdByUid", "createdAt", "updatedAt"]
+    },
+    "MissionMember": {
+      "title": "MissionMember",
+      "description": "Authorized mission participant membership and sharing state.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "orgId": { "type": "string" },
+        "missionId": { "type": "string" },
+        "teamId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "callsign": { "type": "string" },
+        "photoUrl": { "type": "string" },
+        "role": { "type": "string", "enum": ["ORGANIZATION_ADMIN", "TEAM_ADMIN", "TEAM_MEMBER", "SENSOR_OPERATOR"] },
+        "status": { "type": "string", "enum": ["ACTIVE", "LEFT", "REVOKED"] },
+        "sharingEnabled": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "orgId", "missionId", "teamId", "displayName", "callsign", "photoUrl", "role", "status", "sharingEnabled", "createdAt", "updatedAt"]
+    },
+    "MemberLocation": {
+      "title": "MemberLocation",
+      "description": "Authorized mission member real-time GPS location and telemetry.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "orgId": { "type": "string" },
+        "missionId": { "type": "string" },
+        "teamId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "callsign": { "type": "string" },
+        "role": { "type": "string" },
+        "sharingEnabled": { "type": "boolean" },
         "hasValidLocation": { "type": "boolean" },
         "latitude": { "type": "number" },
         "longitude": { "type": "number" },
         "accuracyMeters": { "type": "number" },
-        "locationTimestampMillis": { "type": "integer" },
-        "locationUnavailableReason": { "type": "string" },
+        "headingDegrees": { "type": "number" },
+        "headingReliable": { "type": "boolean" },
         "batteryPercent": { "type": "integer" },
-        "connectionStatus": { "type": "string", "enum": ["online", "offline", "stale", "low_bandwidth"] },
-        "isSynthetic": { "type": "boolean" },
-        "createdAt": { "type": "string", "format": "date-time" },
+        "connectionStatus": { "type": "string", "enum": ["online", "offline", "stale", "gps_disabled", "permission_denied", "paused"] },
+        "locationTimestampMillis": { "type": "integer" },
+        "unavailableReason": { "type": "string" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["orgId", "userId", "leaderUid", "teamCode", "teamName", "memberCount", "activeCount", "status", "locationSharingOptIn", "hasValidLocation", "latitude", "longitude", "accuracyMeters", "locationTimestampMillis", "locationUnavailableReason", "batteryPercent", "connectionStatus", "isSynthetic", "createdAt", "updatedAt"]
+      "required": ["userId", "orgId", "missionId", "teamId", "displayName", "callsign", "role", "sharingEnabled", "hasValidLocation", "latitude", "longitude", "accuracyMeters", "headingDegrees", "headingReliable", "batteryPercent", "connectionStatus", "locationTimestampMillis", "unavailableReason", "updatedAt"]
     },
-    "RescueLocation": {
-      "title": "RescueLocation",
-      "description": "Disaster site and operational boundary.",
+    "SensorDevice": {
+      "title": "SensorDevice",
+      "description": "External hardware sensor registration and orientation for rescue radar.",
       "type": "object",
       "properties": {
+        "sensorId": { "type": "string" },
         "orgId": { "type": "string" },
-        "userId": { "type": "string" },
-        "name": { "type": "string" },
-        "region": { "type": "string" },
-        "hazardType": { "type": "string", "enum": ["earthquake", "flood", "landslide", "structural_collapse", "other"] },
-        "severity": { "type": "string", "enum": ["critical", "high", "moderate", "low"] },
+        "missionId": { "type": "string" },
+        "sensorType": { "type": "string", "enum": ["uwb_life_detection_radar", "fmcw_radar", "thermal_imaging", "acoustic_vibration", "registered_ble_tag", "uwb_ranging_tag"] },
+        "displayName": { "type": "string" },
+        "manufacturerModel": { "type": "string" },
+        "transportType": { "type": "string", "enum": ["gateway_http_tls", "gateway_ws_tls", "gateway_mqtt_tls", "manufacturer_sdk_pending", "ble_registered_tag"] },
+        "connectionStatus": { "type": "string", "enum": ["awaiting_integration", "connecting", "connected", "disconnected", "error"] },
+        "hasPosition": { "type": "boolean" },
         "latitude": { "type": "number" },
         "longitude": { "type": "number" },
-        "radiusMeters": { "type": "number" },
-        "verificationStatus": { "type": "string", "enum": ["verified", "estimated", "unverified", "outdated"] },
-        "dataSource": { "type": "string" },
-        "isSynthetic": { "type": "boolean" },
+        "orientationDegrees": { "type": "number" },
+        "sectorWidthDegrees": { "type": "number" },
+        "maxRangeMeters": { "type": "number" },
+        "calibrationVersion": { "type": "string" },
+        "lastCalibrationMillis": { "type": "integer" },
+        "operatorUid": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["sensorId", "orgId", "missionId", "sensorType", "displayName", "manufacturerModel", "transportType", "connectionStatus", "hasPosition", "latitude", "longitude", "orientationDegrees", "sectorWidthDegrees", "maxRangeMeters", "calibrationVersion", "lastCalibrationMillis", "operatorUid", "updatedAt"]
+    },
+    "SensorEvent": {
+      "title": "SensorEvent",
+      "description": "Normalized external sensor detection event (never fabricated; optional hardware values nullable).",
+      "type": "object",
+      "properties": {
+        "eventId": { "type": "string" },
+        "orgId": { "type": "string" },
+        "missionId": { "type": "string" },
+        "sensorId": { "type": "string" },
+        "sensorType": { "type": "string" },
+        "timestampUtcMillis": { "type": "integer" },
+        "detectionType": { "type": "string" },
+        "estimatedRangeMeters": { "type": "number" },
+        "estimatedAzimuthDegrees": { "type": "number" },
+        "estimatedElevationDegrees": { "type": "number" },
+        "estimatedLatitude": { "type": "number" },
+        "estimatedLongitude": { "type": "number" },
+        "positionAccuracyMeters": { "type": "number" },
+        "confidence": { "type": "number" },
+        "signalQuality": { "type": "string", "enum": ["good", "fair", "poor", "unusable"] },
+        "detectionDurationSeconds": { "type": "number" },
+        "respirationRateBpm": { "type": "number" },
+        "sourceDevice": { "type": "string" },
+        "calibrationVersion": { "type": "string" },
+        "rawDataReference": { "type": "string" },
+        "dataValidity": { "type": "string", "enum": ["valid", "low_confidence", "stale", "uncertain"] },
+        "status": { "type": "string", "enum": ["active", "stale", "reviewed", "cleared"] },
+        "operatorUid": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["eventId", "orgId", "missionId", "sensorId", "sensorType", "timestampUtcMillis", "detectionType", "confidence", "signalQuality", "sourceDevice", "calibrationVersion", "rawDataReference", "dataValidity", "status", "operatorUid", "createdAt"]
+    },
+    "SensorHealth": {
+      "title": "SensorHealth",
+      "description": "Live health, heartbeat, and packet integrity metrics for external sensor stations.",
+      "type": "object",
+      "properties": {
+        "sensorId": { "type": "string" },
+        "orgId": { "type": "string" },
+        "missionId": { "type": "string" },
+        "healthState": { "type": "string", "enum": ["healthy", "degraded", "offline", "error", "awaiting_integration"] },
+        "lastHeartbeatMillis": { "type": "integer" },
+        "packetsReceived": { "type": "integer" },
+        "packetsRejected": { "type": "integer" },
+        "diagnosticNote": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["sensorId", "orgId", "missionId", "healthState", "lastHeartbeatMillis", "packetsReceived", "packetsRejected", "diagnosticNote", "updatedAt"]
+    },
+    "DetectionObservation": {
+      "title": "DetectionObservation",
+      "description": "Operator-reviewed field note linked to an unclassified possible human-presence sensor event.",
+      "type": "object",
+      "properties": {
+        "detectionId": { "type": "string" },
+        "orgId": { "type": "string" },
+        "missionId": { "type": "string" },
+        "sensorEventId": { "type": "string" },
+        "sensorId": { "type": "string" },
+        "operatorUid": { "type": "string" },
+        "classificationLabel": { "type": "string" },
+        "notes": { "type": "string" },
+        "outcome": { "type": "string", "enum": ["unverified_observation", "investigating", "confirmed_clear", "rescue_requested"] },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["orgId", "userId", "name", "region", "hazardType", "severity", "latitude", "longitude", "radiusMeters", "verificationStatus", "dataSource", "isSynthetic", "createdAt", "updatedAt"]
+      "required": ["detectionId", "orgId", "missionId", "sensorEventId", "sensorId", "operatorUid", "classificationLabel", "notes", "outcome", "createdAt", "updatedAt"]
     },
-    "PresenceSignal": {
-      "title": "PresenceSignal",
-      "description": "Human presence sensor detection separating simulated vs hardware and estimated vs verified.",
+    "SosAlert": {
+      "title": "SosAlert",
+      "description": "Emergency SOS or team separation alert with server delivery and cancellation audit.",
       "type": "object",
       "properties": {
+        "alertId": { "type": "string" },
         "orgId": { "type": "string" },
-        "userId": { "type": "string" },
-        "locationId": { "type": "string" },
-        "sectorLabel": { "type": "string" },
-        "signalType": { "type": "string", "enum": ["thermal_ir", "radar_respiration", "acoustic_vibration", "co2_plume", "lidar_void"] },
-        "sourceKind": { "type": "string", "enum": ["simulated", "hardware"] },
-        "deviceId": { "type": "string" },
-        "calibrationStatus": { "type": "string", "enum": ["calibrated", "needs_calibration", "nominal", "unknown"] },
-        "sensorHealth": { "type": "string", "enum": ["healthy", "degraded", "error", "offline"] },
-        "latitude": { "type": "number" },
-        "longitude": { "type": "number" },
-        "hasCoordinates": { "type": "boolean" },
-        "estimatedMinCount": { "type": "integer" },
-        "estimatedMaxCount": { "type": "integer" },
-        "confidencePercent": { "type": "integer" },
-        "verificationStatus": { "type": "string", "enum": ["estimated", "unverified", "field_verified", "outdated"] },
-        "dataSource": { "type": "string" },
-        "verifiedByUid": { "type": "string" },
-        "verificationNotes": { "type": "string" },
-        "observationTimestampMillis": { "type": "integer" },
-        "isSynthetic": { "type": "boolean" },
-        "createdAt": { "type": "string", "format": "date-time" },
-        "updatedAt": { "type": "string", "format": "date-time" }
-      },
-      "required": ["orgId", "userId", "locationId", "sectorLabel", "signalType", "sourceKind", "deviceId", "calibrationStatus", "sensorHealth", "latitude", "longitude", "hasCoordinates", "estimatedMinCount", "estimatedMaxCount", "confidencePercent", "verificationStatus", "dataSource", "verifiedByUid", "verificationNotes", "observationTimestampMillis", "isSynthetic", "createdAt", "updatedAt"]
-    },
-    "RescueRegistryEntry": {
-      "title": "RescueRegistryEntry",
-      "description": "Rescue registry record with 6 verification levels and PII controls.",
-      "type": "object",
-      "properties": {
-        "orgId": { "type": "string" },
-        "userId": { "type": "string" },
-        "category": { "type": "string", "enum": ["missing_person", "verified_survivor", "medical_request", "disaster_site"] },
-        "title": { "type": "string" },
-        "locationName": { "type": "string" },
-        "latitude": { "type": "number" },
-        "longitude": { "type": "number" },
-        "hasCoordinates": { "type": "boolean" },
-        "details": { "type": "string" },
-        "sensitiveContactMasked": { "type": "string" },
-        "photoUriLocal": { "type": "string" },
-        "photoConsentGranted": { "type": "boolean" },
-        "rescueStatus": { "type": "string", "enum": ["open", "dispatched", "in_progress", "resolved"] },
-        "verificationStatus": { "type": "string", "enum": ["reported", "under_verification", "verified", "unverified", "duplicate", "resolved"] },
-        "informationSource": { "type": "string" },
-        "verifierUid": { "type": "string" },
-        "verificationNotes": { "type": "string" },
-        "duplicateOfId": { "type": "string" },
-        "isSynthetic": { "type": "boolean" },
-        "createdAt": { "type": "string", "format": "date-time" },
-        "updatedAt": { "type": "string", "format": "date-time" }
-      },
-      "required": ["orgId", "userId", "category", "title", "locationName", "latitude", "longitude", "hasCoordinates", "details", "sensitiveContactMasked", "photoUriLocal", "photoConsentGranted", "rescueStatus", "verificationStatus", "informationSource", "verifierUid", "verificationNotes", "duplicateOfId", "isSynthetic", "createdAt", "updatedAt"]
-    },
-    "SosIncident": {
-      "title": "SosIncident",
-      "description": "Emergency SOS incident with full lifecycle states and audit tracking.",
-      "type": "object",
-      "properties": {
-        "incidentId": { "type": "string" },
-        "orgId": { "type": "string" },
+        "missionId": { "type": "string" },
         "senderUid": { "type": "string" },
         "senderName": { "type": "string" },
-        "teamCode": { "type": "string" },
-        "priority": { "type": "string", "enum": ["sos", "urgent", "routine"] },
-        "description": { "type": "string" },
-        "status": { "type": "string", "enum": ["created", "pending_delivery", "delivered", "acknowledged", "team_assigned", "responding", "resolved", "closed", "failed"] },
+        "teamId": { "type": "string" },
+        "alertType": { "type": "string", "enum": ["sos", "separation_alert"] },
+        "priority": { "type": "string", "enum": ["critical", "urgent"] },
+        "status": { "type": "string", "enum": ["active", "acknowledged", "responding", "resolved", "cancelled"] },
         "hasLocation": { "type": "boolean" },
         "latitude": { "type": "number" },
         "longitude": { "type": "number" },
         "accuracyMeters": { "type": "number" },
-        "assignedTeamId": { "type": "string" },
-        "assignedTeamCode": { "type": "string" },
+        "locationTimestampMillis": { "type": "integer" },
+        "description": { "type": "string" },
         "acknowledgedByUid": { "type": "string" },
         "acknowledgedAtMillis": { "type": "integer" },
+        "cancelledByUid": { "type": "string" },
+        "cancelReason": { "type": "string" },
+        "notificationStatus": { "type": "string" },
         "deliveryNote": { "type": "string" },
-        "isSynthetic": { "type": "boolean" },
+        "pushAttemptedCount": { "type": "integer" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["incidentId", "orgId", "senderUid", "senderName", "teamCode", "priority", "description", "status", "hasLocation", "latitude", "longitude", "accuracyMeters", "assignedTeamId", "assignedTeamCode", "acknowledgedByUid", "acknowledgedAtMillis", "deliveryNote", "isSynthetic", "createdAt", "updatedAt"]
+      "required": ["alertId", "orgId", "missionId", "senderUid", "senderName", "teamId", "alertType", "priority", "status", "hasLocation", "latitude", "longitude", "accuracyMeters", "locationTimestampMillis", "description", "acknowledgedByUid", "acknowledgedAtMillis", "cancelledByUid", "cancelReason", "notificationStatus", "deliveryNote", "pushAttemptedCount", "createdAt", "updatedAt"]
     },
-    "SosAuditLog": {
-      "title": "SosAuditLog",
-      "description": "Append-only SOS incident state transition log.",
+    "GatewayDevice": {
+      "title": "GatewayDevice",
+      "description": "Registered Edge Gateway / Sensor Hub connection record.",
+      "type": "object",
+      "properties": {
+        "gatewayId": { "type": "string" },
+        "orgId": { "type": "string" },
+        "name": { "type": "string" },
+        "transportType": { "type": "string", "enum": ["http_tls", "websocket_tls", "mqtt_tls"] },
+        "endpointUri": { "type": "string" },
+        "status": { "type": "string", "enum": ["online", "degraded", "offline", "unverified"] },
+        "bufferedEventCount": { "type": "integer" },
+        "lastHeartbeatMillis": { "type": "integer" },
+        "registeredByUid": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["gatewayId", "orgId", "name", "transportType", "endpointUri", "status", "bufferedEventCount", "lastHeartbeatMillis", "registeredByUid", "updatedAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Immutable security and operational audit trail.",
       "type": "object",
       "properties": {
         "orgId": { "type": "string" },
-        "incidentId": { "type": "string" },
+        "missionId": { "type": "string" },
+        "teamId": { "type": "string" },
         "actorUid": { "type": "string" },
-        "fromStatus": { "type": "string" },
-        "toStatus": { "type": "string" },
-        "note": { "type": "string" },
+        "actorName": { "type": "string" },
+        "category": { "type": "string", "enum": ["membership", "removal", "reinstatement", "invite", "role", "mission", "sos", "sensor", "gateway"] },
+        "action": { "type": "string" },
+        "targetUid": { "type": "string" },
+        "summary": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["orgId", "incidentId", "actorUid", "fromStatus", "toStatus", "note", "createdAt"]
+      "required": ["orgId", "missionId", "teamId", "actorUid", "actorName", "category", "action", "targetUid", "summary", "createdAt"]
     }
   },
   "firestore": {
     "/users/{userId}": {
       "schema": { "$ref": "#/entities/UserProfile" },
-      "description": "Authenticated responder profile."
+      "description": "Owner-isolated authenticated responder profile."
     },
     "/organizations/{orgId}": {
       "schema": { "$ref": "#/entities/RescueOrganization" },
       "description": "Rescue organization workspace."
     },
-    "/organizations/{orgId}/invites/{inviteCode}": {
-      "schema": { "$ref": "#/entities/OrgInvite" },
-      "description": "Invite codes for joining an organization."
-    },
     "/organizations/{orgId}/members/{memberUid}": {
       "schema": { "$ref": "#/entities/OrgMember" },
-      "description": "Organization member RBAC records."
+      "description": "Organization member roles and REVOKED status."
+    },
+    "/organizations/{orgId}/blockedMemberships/{targetUid}": {
+      "schema": { "$ref": "#/entities/BlockedMembership" },
+      "description": "Admin-enforced blocked user registry."
+    },
+    "/organizations/{orgId}/invitations/{invitationId}": {
+      "schema": { "$ref": "#/entities/Invitation" },
+      "description": "Expiring invitations with member invite toggle and admin approval."
     },
     "/organizations/{orgId}/teams/{teamId}": {
       "schema": { "$ref": "#/entities/RescueTeam" },
-      "description": "Organization rescue teams."
+      "description": "Rescue teams."
     },
-    "/organizations/{orgId}/locations/{locationId}": {
-      "schema": { "$ref": "#/entities/RescueLocation" },
-      "description": "Organization disaster sites."
+    "/organizations/{orgId}/teams/{teamId}/teamMembers/{memberUid}": {
+      "schema": { "$ref": "#/entities/TeamMember" },
+      "description": "Team members."
     },
-    "/organizations/{orgId}/presence_signals/{signalId}": {
-      "schema": { "$ref": "#/entities/PresenceSignal" },
-      "description": "Sensor human-presence detections."
+    "/organizations/{orgId}/teams/{teamId}/blockedMemberships/{targetUid}": {
+      "schema": { "$ref": "#/entities/BlockedMembership" },
+      "description": "Team-level blocked membership records."
     },
-    "/organizations/{orgId}/registry/{entryId}": {
-      "schema": { "$ref": "#/entities/RescueRegistryEntry" },
-      "description": "Organization rescue registry."
+    "/organizations/{orgId}/missions/{missionId}": {
+      "schema": { "$ref": "#/entities/Mission" },
+      "description": "Shared rescue mission records."
     },
-    "/organizations/{orgId}/sos_incidents/{incidentId}": {
-      "schema": { "$ref": "#/entities/SosIncident" },
-      "description": "Organization SOS emergency incidents."
+    "/organizations/{orgId}/missions/{missionId}/missionMembers/{memberUid}": {
+      "schema": { "$ref": "#/entities/MissionMember" },
+      "description": "Authorized mission members."
     },
-    "/organizations/{orgId}/sos_incidents/{incidentId}/audit_logs/{logId}": {
-      "schema": { "$ref": "#/entities/SosAuditLog" },
-      "description": "Append-only SOS audit history."
+    "/organizations/{orgId}/missions/{missionId}/blockedMemberships/{targetUid}": {
+      "schema": { "$ref": "#/entities/BlockedMembership" },
+      "description": "Mission-level blocked membership records."
+    },
+    "/organizations/{orgId}/missions/{missionId}/locations/{memberUid}": {
+      "schema": { "$ref": "#/entities/MemberLocation" },
+      "description": "Authorized mission member real-time GPS updates."
+    },
+    "/organizations/{orgId}/missions/{missionId}/sensorDevices/{sensorId}": {
+      "schema": { "$ref": "#/entities/SensorDevice" },
+      "description": "Mission external sensor registrations."
+    },
+    "/organizations/{orgId}/missions/{missionId}/sensorHealth/{sensorId}": {
+      "schema": { "$ref": "#/entities/SensorHealth" },
+      "description": "External sensor health and heartbeats."
+    },
+    "/organizations/{orgId}/missions/{missionId}/sensorEvents/{eventId}": {
+      "schema": { "$ref": "#/entities/SensorEvent" },
+      "description": "Validated unclassified sensor detection events."
+    },
+    "/organizations/{orgId}/missions/{missionId}/detections/{detectionId}": {
+      "schema": { "$ref": "#/entities/DetectionObservation" },
+      "description": "Operator observation notes linked to sensor events."
+    },
+    "/organizations/{orgId}/missions/{missionId}/sosAlerts/{alertId}": {
+      "schema": { "$ref": "#/entities/SosAlert" },
+      "description": "Emergency SOS and team separation alerts."
+    },
+    "/organizations/{orgId}/gatewayDevices/{gatewayId}": {
+      "schema": { "$ref": "#/entities/GatewayDevice" },
+      "description": "Registered Edge Gateways / Sensor Hubs."
+    },
+    "/organizations/{orgId}/auditLogs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Immutable operational and membership audit trail."
     }
   }
 }

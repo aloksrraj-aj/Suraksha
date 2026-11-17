@@ -1,14 +1,13 @@
 <resources>
     <string name="app_name">सुरक्षा</string>
-    <string name="nav_overview">अवलोकन</string>
-    <string name="nav_live_map">लाइव मैप</string>
-    <string name="nav_env_map">पर्यावरण मैप</string>
-    <string name="nav_presence">उपस्थिति</string>
-    <string name="nav_teams">बचाव दल</string>
-    <string name="nav_registry">रजिस्ट्री</string>
+    <string name="nav_missions">मिशन</string>
+    <string name="nav_radar">रडार</string>
     <string name="nav_sensors">सेंसर</string>
+    <string name="nav_team">टीम</string>
     <string name="nav_settings">सेटिंग्स</string>
-    <string name="banner_demo_mode">डेमो मोड • सिंथेटिक डेटा</string>
+    <string name="banner_demo_mode">डेमो मोड • केवल परीक्षण डेटा</string>
     <string name="banner_offline_cache">ऑफ़लाइन मोड • कैश्ड डेटा</string>
-    <string name="sos_button_label">SOS अलर्ट भेजें</string>
+    <string name="no_live_sensor_data">कोई लाइव सेंसर डेटा नहीं — संगत सेंसर कनेक्ट करें</string>
+    <string name="unclassified_presence_label">अवर्गीकृत संभावित मानव उपस्थिति</string>
+    <string name="sos_button_label">आपातकालीन SOS भेजें</string>
 </resources>

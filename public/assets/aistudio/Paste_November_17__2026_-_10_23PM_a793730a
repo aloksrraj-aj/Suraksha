@@ -1,0 +1,1007 @@
+# PROJECT: SURAKSHA — LIVE RESCUE TEAM RADAR & MISSION TRACKING APPLICATION
+
+## 1. YOUR ROLE
+
+Act as a senior Android developer, Kotlin and Jetpack Compose architect, Firebase backend engineer, real-time GPS tracking specialist, GIS developer, UI/UX designer, and cybersecurity engineer.
+
+I have an existing Android application named SURAKSHA.
+
+I want to transform this existing application into a focused, professional, real-time rescue team radar and mission tracking application.
+
+IMPORTANT: This is NOT a general disaster management application anymore.
+
+I do NOT want unnecessary AI features, sensor dashboards, human detection systems, environment mapping, survivor registries, or other unrelated modules.
+
+I want ONE MAIN PURPOSE:
+
+**When a rescue team goes on a mission, every authorized member of that mission should be able to see their own location and the live locations of all other members of the same mission on a radar-style screen and geographical map.**
+
+The application should help the entire team stay connected, remain together, monitor each other's positions, and avoid wasting time searching for separated team members.
+
+Work directly on the existing source code.
+
+Do not create a new project from scratch.
+
+Do not merely give recommendations. Implement the actual changes.
+
+---
+
+# 2. REMOVE ALL UNNECESSARY EXISTING FEATURES
+
+First inspect the complete existing application.
+
+Remove the following modules and their associated screens, navigation entries, ViewModels, repositories, models, background jobs, demo data, and unnecessary backend dependencies wherever they are no longer required:
+
+1. Gemini AI rescue assistant.
+2. AI rescue briefings.
+3. AI triage.
+4. Human presence detection.
+5. UWB sensor integration.
+6. Thermal sensor monitoring.
+7. Acoustic sensor monitoring.
+8. CO2 sensor monitoring.
+9. BLE sensor monitoring.
+10. Sensor fusion.
+11. Sensor status dashboard.
+12. Synthetic sensor data.
+13. Environment mapping.
+14. 2D occupancy grids.
+15. 3D point clouds.
+16. SLAM simulation.
+17. LiDAR mapping.
+18. Missing-person registry.
+19. Survivor registry.
+20. Medical assistance registry.
+21. Disaster analytics dashboard.
+22. Drone integration placeholders.
+23. Unnecessary disaster statistics.
+24. Unnecessary AI-generated reports.
+25. Other unrelated disaster management modules.
+
+Remove unused dependencies and obsolete Firebase collections and indexes only after checking that no retained feature depends on them.
+
+Keep only the infrastructure necessary for:
+
+- User authentication.
+- Individual user profiles.
+- Rescue team management.
+- Team administration.
+- Mission creation and management.
+- Secure team invitations.
+- Member verification.
+- Live GPS location sharing.
+- Radar visualization.
+- Real geographical map.
+- Real-time member synchronization.
+- Emergency member status.
+- Basic notification system.
+- Settings and privacy controls.
+- Local caching and network synchronization.
+
+Do not remove Firebase Authentication, Firestore, Room, GPS, map infrastructure, or security components that are necessary for the new application.
+
+Do not keep unnecessary features hidden in navigation. Remove them properly.
+
+---
+
+# 3. CORE APPLICATION CONCEPT
+
+Build the application around three main concepts:
+
+A. USER
+
+Every person has an individual account.
+
+B. TEAM
+
+A team has one administrator and multiple verified members.
+
+C. MISSION
+
+A mission is a shared live tracking session connected to a particular rescue team.
+
+Example:
+
+Team Name: SURAKSHA RESCUE TEAM 01
+
+Mission Name: MATHURA RESCUE OPERATION
+
+Mission ID: MTR-2026-001
+
+Team Admin: Person A
+
+Members:
+
+- Person A
+- Person B
+- Person C
+- Person D
+- Person E
+- Person F
+
+Every member logs in separately using their own account.
+
+All authorized members join the same mission.
+
+When the mission becomes active, every member sees the same mission and the locations of all other authorized members on their own phones.
+
+All location updates must synchronize in real time.
+
+A member must not have to create a separate mission to see their teammates.
+
+There must be one shared mission session for the entire team.
+
+---
+
+# 4. USER AUTHENTICATION
+
+Implement a clean and secure login system.
+
+Requirements:
+
+1. Individual account for every user.
+2. Google Sign-In using the existing Firebase Authentication configuration.
+3. Unique Firebase UID for every user.
+4. User profile containing:
+   - Full name.
+   - Profile photograph.
+   - Phone number, if voluntarily provided.
+   - Unique user ID.
+   - Team membership.
+   - Verification status.
+   - Role.
+5. Persistent login session.
+6. Logout.
+7. Account status.
+8. Secure profile updates.
+
+Every location must be associated with the authenticated user's UID.
+
+Never allow one user to submit location updates using another user's identity.
+
+A user's account must remain separate from the team's mission.
+
+---
+
+# 5. TEAM CREATION AND TEAM ADMINISTRATION
+
+Create a proper Team Management module.
+
+A team must have:
+
+- Unique Team ID.
+- Team name.
+- Team administrator.
+- Team members.
+- Team creation date.
+- Team verification status.
+- Active mission.
+- Member count.
+
+TEAM ADMIN POWERS:
+
+The team administrator must be able to:
+
+1. Create a team.
+2. Edit the team name.
+3. Add new members.
+4. Invite members.
+5. Verify membership.
+6. Remove a member.
+7. Reinstate a previously removed member.
+8. View all team members.
+9. View all team member locations during an active mission.
+10. Create a mission.
+11. Start a mission.
+12. End a mission.
+13. Manage team permissions.
+
+There must be one clearly identified administrator.
+
+Do not allow ordinary members to become administrators automatically.
+
+---
+
+# 6. MEMBER JOINING AND VERIFICATION SYSTEM
+
+This is a very important feature.
+
+I want two supported ways for someone to join a team.
+
+METHOD A — ADMIN ADDS A MEMBER
+
+1. Admin opens Team Management.
+2. Admin selects Add Member.
+3. Admin searches for or invites a user using their registered email or secure invitation.
+4. The invited user receives an invitation.
+5. The user accepts the invitation.
+6. Membership is verified.
+7. The member appears in the team member list.
+
+METHOD B — VERIFIED MEMBER INVITES ANOTHER MEMBER
+
+1. An existing verified team member can generate a secure invitation.
+2. The invitation contains a unique, non-guessable invitation token.
+3. The new person signs in using their individual account.
+4. The invitation is validated.
+5. The new member accepts the invitation.
+6. The system verifies the invitation and adds the member to the team.
+7. The administrator can see the new member in the team.
+
+A verified member must not be able to assign administrator privileges or override team security policies.
+
+The administrator must be able to disable member-generated invitations.
+
+All invitation tokens must have expiration and single-use protection.
+
+---
+
+# 7. VERY IMPORTANT: PERMANENT REMOVAL RESTRICTION
+
+This condition must be implemented strictly.
+
+When the Team Admin removes a member:
+
+1. Remove that member from the active team.
+2. Immediately revoke their team access.
+3. Immediately revoke their access to the team's active missions.
+4. Stop their ability to view team member locations.
+5. Stop their ability to upload location updates to that team's mission.
+6. Remove them from the live radar.
+7. Record the removal in the team audit history.
+8. Add their UID to a permanent team-specific blocked membership list.
+
+MOST IMPORTANT RULE:
+
+**Once an administrator removes a member, that person must NEVER be able to rejoin that team through a mission code, invitation link, QR code, another member's invitation, or self-joining process.**
+
+Only the Team Admin can manually reinstate that person.
+
+If the administrator does not reinstate them, the person must remain blocked.
+
+Even another verified member must not be able to invite or add a removed person back.
+
+Implement server-side checks for this rule.
+
+Do not rely only on hiding buttons in the UI.
+
+A removed member must lose access immediately, including access through an already-open application session.
+
+---
+
+# 8. MISSION CREATION AND SHARED MISSION SYSTEM
+
+This is the heart of the application.
+
+The Team Admin creates a mission.
+
+Mission fields:
+
+- Unique Mission ID.
+- Mission name.
+- Team ID.
+- Mission administrator.
+- Mission description.
+- Starting location.
+- Creation time.
+- Mission status.
+- Mission member list.
+
+Mission states:
+
+- Created.
+- Ready.
+- Active.
+- Paused.
+- Completed.
+- Cancelled.
+
+MISSION WORKFLOW:
+
+1. Admin opens the team.
+2. Admin selects Create Mission.
+3. Admin enters the mission name.
+4. Admin selects the team members participating in the mission.
+5. Admin creates the mission.
+6. All selected verified members receive mission invitations or access.
+7. Each member accepts and joins.
+8. Every member sees the same Mission ID.
+9. Admin starts the mission.
+10. All participating members enter the same live radar session.
+
+IMPORTANT:
+
+All team members must be connected to the SAME mission ID.
+
+Do not create individual independent missions for each member.
+
+Every member must see the same mission status and participant list.
+
+Only authorized active members of that mission can see its live location data.
+
+When the mission is completed, live mission tracking must stop and the mission should be archived.
+
+---
+
+# 9. MAIN FEATURE: LIVE RESCUE RADAR
+
+This is the most important feature of the application.
+
+Build a professional radar-style interface.
+
+I want the visual experience of a modern tactical GPS radar.
+
+Do not make this a simple list of team members.
+
+The primary screen should look and behave like a live radar.
+
+RADAR DESIGN:
+
+- Dark tactical background.
+- Circular radar.
+- Multiple concentric distance rings.
+- A rotating radar sweep animation.
+- Center marker representing the current user.
+- Moving dots representing other mission members.
+- Different colors for member statuses.
+- Member labels.
+- Direction indicators.
+- Distance information.
+- Range controls.
+- Smooth location updates.
+- Radar zoom controls.
+
+RADAR ELEMENTS:
+
+A. SELF MARKER
+
+Show the current user's location at the center of the radar.
+
+Label it:
+
+YOU
+
+B. TEAM MEMBER MARKERS
+
+Show all other authorized mission members as separate dots.
+
+Every dot should be connected to a real member profile.
+
+C. DISTANCE RINGS
+
+Provide configurable ranges:
+
+- 25 meters.
+- 50 meters.
+- 100 meters.
+- 250 meters.
+- 500 meters.
+- 1 kilometer.
+- Custom range.
+
+D. RADAR SWEEP
+
+Add a smooth rotating radar sweep animation.
+
+The sweep is only a visual effect.
+
+It must NOT generate fake GPS detections or fake member positions.
+
+E. MEMBER INFORMATION
+
+When a user taps another member's radar marker, show:
+
+- Member name.
+- Profile picture.
+- Team role.
+- Distance from current user.
+- Direction.
+- Last GPS update.
+- GPS accuracy.
+- Battery level, if available and permission is granted.
+- Location sharing status.
+- Connection status.
+
+F. RADAR RANGE
+
+Members outside the current radar range must not disappear from the system.
+
+Show an indicator such as:
+
+"3 members outside current range"
+
+Allow the user to increase the range.
+
+G. HEADING
+
+If reliable compass or device heading is available, use it to orient the radar.
+
+Allow a North-up mode and a user-heading-up mode.
+
+Show a heading accuracy warning when orientation is unreliable.
+
+Do not invent direction or bearing.
+
+---
+
+# 10. REAL GEOGRAPHICAL MAP VIEW
+
+In addition to the radar, provide a real geographical map view.
+
+Add two main view modes:
+
+1. RADAR VIEW
+2. MAP VIEW
+
+RADAR VIEW:
+
+Shows a tactical circular radar with relative member positions.
+
+MAP VIEW:
+
+Shows real geographical positions on a map.
+
+Map requirements:
+
+- OpenStreetMap or another properly licensed provider.
+- Current user location.
+- All authorized mission members.
+- Different markers for different team members.
+- Member names.
+- Live location updates.
+- Zoom and pan.
+- Distance measurement.
+- Member selection.
+- Last-seen status.
+- Map attribution.
+
+If multiple teams participate in the same mission, show all authorized mission participants with team-specific colors or markers.
+
+A member must only see other people who are authorized participants in the same mission.
+
+Do not display arbitrary nearby strangers or publicly expose team member positions.
+
+---
+
+# 11. REAL-TIME GPS TRACKING
+
+Implement actual continuous location sharing.
+
+Use the appropriate Android location APIs, including FusedLocationProviderClient where available.
+
+Requirements:
+
+1. Ask the user for location permission.
+2. Explain why location is needed.
+3. Provide an explicit Start Sharing button.
+4. Provide a Stop Sharing button.
+5. Start a foreground location service for active mission tracking.
+6. Show a persistent tracking notification.
+7. Upload the user's location securely.
+8. Synchronize updates with Firestore.
+9. Receive other team members' updates in real time.
+10. Update radar positions smoothly.
+11. Show last update time.
+12. Show location accuracy.
+13. Detect stale GPS signals.
+14. Detect network loss.
+15. Handle GPS disabled.
+16. Handle permissions revoked.
+17. Handle app backgrounding.
+18. Handle process restart safely.
+19. Optimize battery usage.
+
+Use an appropriate configurable tracking interval, such as approximately 3–5 seconds while a mission is active, subject to battery, GPS quality, Android restrictions and network availability.
+
+Do not pretend that updates are continuous if Android has stopped location delivery.
+
+If a location is older than the configured freshness threshold, show:
+
+"LOCATION STALE"
+
+If GPS is disabled, show:
+
+"GPS UNAVAILABLE"
+
+If the device is offline, show:
+
+"OFFLINE — LAST KNOWN LOCATION"
+
+Do not silently use hardcoded coordinates.
+
+Do not report a stale location as a live location.
+
+---
+
+# 12. TEAM MEMBER STATUS INDICATORS
+
+Use the following status system:
+
+GREEN:
+
+Member is online and sharing fresh GPS location.
+
+YELLOW:
+
+Member has weak GPS accuracy or a stale location.
+
+GREY:
+
+Member is offline or location sharing is disabled.
+
+RED:
+
+Member has activated an emergency SOS.
+
+Show these indicators consistently on both radar and map.
+
+Do not use green status merely because a user has an active login session.
+
+GPS freshness and connectivity must be checked separately.
+
+---
+
+# 13. MEMBER SEPARATION ALERT
+
+Add an important feature called TEAM SEPARATION ALERT.
+
+The Team Admin can configure a maximum allowed distance between team members.
+
+Example:
+
+- 50 meters.
+- 100 meters.
+- 200 meters.
+- Custom distance.
+
+If a member moves beyond the configured distance from the selected team reference point or designated leader:
+
+1. Display a separation warning.
+2. Highlight the member on radar.
+3. Display the distance.
+4. Show the member's last known location.
+5. Notify authorized team members.
+6. Allow the admin to acknowledge the warning.
+
+Support false-positive protection using:
+
+- GPS accuracy.
+- Consecutive location readings.
+- Configurable warning delay.
+- Location freshness.
+
+Do not generate alerts from inaccurate or stale coordinates.
+
+Allow the admin to disable separation alerts.
+
+This is a warning system, not a substitute for physical rescue safety procedures.
+
+---
+
+# 14. EMERGENCY SOS BUTTON
+
+Keep only a simple emergency SOS feature because it is directly related to rescue team safety.
+
+Add a clearly visible SOS button.
+
+When a member activates SOS:
+
+1. Generate an incident ID.
+2. Record the authenticated user.
+3. Record mission ID.
+4. Record team ID.
+5. Record the latest valid GPS coordinates, if available.
+6. Record the timestamp.
+7. Mark the member as SOS.
+8. Highlight their marker in red.
+9. Notify other authorized mission members.
+10. Notify the Team Admin.
+11. Show an SOS acknowledgement status.
+
+Support:
+
+- SOS Active.
+- Acknowledged.
+- Assistance Responding.
+- Resolved.
+
+Use a secure trusted backend and FCM for real remote push notification delivery.
+
+Clearly distinguish between saving an SOS record and successfully dispatching a notification.
+
+Do not claim that SOS was delivered if it is only stored locally or in Firestore.
+
+---
+
+# 15. TEAM ADMIN RADAR CONTROLS
+
+Give the Team Admin additional controls:
+
+- Create mission.
+- Start mission.
+- Pause mission.
+- Complete mission.
+- Add member.
+- Remove member.
+- Reinstate removed member.
+- Approve invitations.
+- Disable member invitations.
+- Configure radar range.
+- Configure separation distance.
+- View all active member locations.
+- View member online/offline status.
+- View location freshness.
+- Acknowledge SOS.
+- End mission.
+
+Ordinary members must not have administrator privileges.
+
+---
+
+# 16. MEMBER APPLICATION EXPERIENCE
+
+Every normal team member should have a simple interface.
+
+After login:
+
+1. View their team.
+2. View active mission.
+3. Join the authorized mission.
+4. Start location sharing.
+5. Open radar.
+6. See all mission members.
+7. Switch between radar and map.
+8. Select a teammate.
+9. View distance and direction.
+10. View member status.
+11. Send SOS.
+12. Stop location sharing.
+13. Leave a mission only according to team policy.
+
+Do not expose administrative controls to ordinary members.
+
+---
+
+# 17. DATABASE ARCHITECTURE
+
+Simplify the existing Firebase architecture around users, teams, missions, memberships, locations and emergency alerts.
+
+Suggested structure:
+
+users/{uid}
+
+teams/{teamId}
+
+teams/{teamId}/members/{uid}
+
+teams/{teamId}/blockedMembers/{uid}
+
+teams/{teamId}/invitations/{invitationId}
+
+missions/{missionId}
+
+missions/{missionId}/members/{uid}
+
+missions/{missionId}/locations/{uid}
+
+missions/{missionId}/alerts/{alertId}
+
+missions/{missionId}/auditLogs/{logId}
+
+Use appropriate server timestamps.
+
+Use location update timestamps.
+
+Do not store unnecessary duplicate personal data.
+
+Keep the database scalable.
+
+Use Firestore listeners for authorized real-time location updates.
+
+Avoid unnecessary full-collection reads.
+
+Use batched writes or transactions where appropriate.
+
+Define proper indexes.
+
+Do not allow clients to modify their own role, verification status, or blocked membership status.
+
+Validate all mission membership on the server side.
+
+The suggested structure may be adapted to the existing codebase, but the security guarantees must be preserved.
+
+---
+
+# 18. FIRESTORE SECURITY RULES
+
+This is critical.
+
+Implement strict Firestore security rules.
+
+Rules must enforce:
+
+1. Only authenticated users can access protected resources.
+2. Only team members can access their team.
+3. Only active mission members can access that mission's locations.
+4. A user can update only their own location record.
+5. A user cannot spoof another member's UID.
+6. A removed member cannot read mission locations.
+7. A blocked member cannot rejoin through an invitation.
+8. Only the Team Admin can reinstate a blocked member.
+9. Only authorized members can invite new users.
+10. Ordinary members cannot change administrator roles.
+11. Ordinary members cannot remove the Team Admin.
+12. Only the admin can complete or cancel missions.
+13. Location updates must contain valid coordinates.
+14. Location updates must contain valid timestamps.
+15. Location records must have a valid mission membership.
+16. SOS status transitions must be authorized.
+17. Members cannot alter other members' GPS coordinates.
+18. Members cannot change their own verification status.
+
+The removal restriction must be enforced by backend security rules and trusted server logic, not just frontend code.
+
+---
+
+# 19. PRIVACY AND SECURITY
+
+Location is sensitive personal information.
+
+Implement:
+
+- Explicit location sharing consent.
+- Visible tracking indicator.
+- Stop Sharing control.
+- Mission-specific location visibility.
+- Automatic tracking stop when a mission ends.
+- Revocation of access when membership is removed.
+- Secure authentication.
+- Secure invitation tokens.
+- App Check.
+- HTTPS-only production network communication.
+- Restricted Firestore permissions.
+- No public location database.
+- No unnecessary background tracking.
+- No collection of location outside an authorized active mission.
+
+A member must know when their location is being shared.
+
+Do not secretly track any member.
+
+---
+
+# 20. UI/UX DESIGN
+
+The new application should be minimal and focused.
+
+Do not retain the old complicated disaster management dashboard.
+
+MAIN NAVIGATION SHOULD ONLY CONTAIN:
+
+1. HOME / MISSION.
+2. RADAR.
+3. TEAM.
+4. PROFILE / SETTINGS.
+
+HOME:
+
+- Current team.
+- Active mission.
+- Mission ID.
+- Number of connected members.
+- Start/Join mission controls.
+- Tracking status.
+
+RADAR:
+
+- Full-screen circular radar.
+- Team member dots.
+- Distance rings.
+- Radar sweep.
+- Range control.
+- Member information.
+
+TEAM:
+
+- Team admin.
+- Team members.
+- Online/offline status.
+- Invitations.
+- Member management based on permissions.
+
+PROFILE / SETTINGS:
+
+- User profile.
+- Location permission.
+- Start/Stop Sharing.
+- Privacy.
+- Logout.
+
+Use a professional tactical radar appearance.
+
+Prefer a dark background with clear high-contrast radar elements.
+
+Keep text readable.
+
+Avoid unnecessary animations that consume battery.
+
+Do not make the application look like a military weapon-control system.
+
+This is a humanitarian rescue coordination tool.
+
+---
+
+# 21. TESTING REQUIREMENTS
+
+After implementation, test the actual system.
+
+A. Multi-user testing:
+
+- Create one team.
+- Add five test users.
+- Create one shared mission.
+- Log in on five different devices or emulators.
+- Verify that all members see the same mission.
+- Verify that every member sees the other active members.
+
+B. GPS testing:
+
+- Change one device's GPS position.
+- Confirm that the other devices receive the updated location.
+- Check distance and direction.
+- Test GPS permission denial.
+- Test GPS disabled.
+- Test internet disconnected.
+- Test app backgrounding.
+- Test stale locations.
+
+C. Admin security testing:
+
+- Admin adds a member.
+- Verified member invites another member.
+- Admin removes a member.
+- Removed member attempts to rejoin.
+- Another member attempts to invite the removed member.
+- Verify that all rejoining attempts fail.
+- Admin manually reinstates the removed member.
+- Verify that the member can join again only after reinstatement.
+
+D. Mission testing:
+
+- Create mission.
+- Join mission.
+- Start mission.
+- Pause mission.
+- Resume mission if supported.
+- Complete mission.
+- Verify that location sharing and mission access stop appropriately.
+
+E. Radar testing:
+
+- Test different distances.
+- Test multiple simultaneous members.
+- Test markers outside range.
+- Test stale GPS.
+- Test heading accuracy.
+- Test location updates without UI flickering.
+
+F. SOS testing:
+
+- Activate SOS.
+- Verify member marker changes.
+- Verify alert reaches authorized recipients.
+- Verify acknowledgement.
+- Verify resolution.
+
+G. Firebase security tests:
+
+- Unauthorized user.
+- Removed member.
+- Blocked member.
+- Ordinary member.
+- Team admin.
+- Cross-team user.
+- Cross-mission user.
+
+Run actual builds and tests where possible.
+
+Never claim that a test passed unless it was executed.
+
+---
+
+# 22. FINAL PROJECT DELIVERABLES
+
+Provide:
+
+1. Updated complete Android project.
+2. Updated Kotlin source files.
+3. Cleaned navigation.
+4. Updated database models.
+5. Updated Firebase repository.
+6. Updated Firestore rules.
+7. Updated indexes.
+8. Updated location service.
+9. Radar UI implementation.
+10. Real geographical map implementation.
+11. Mission management.
+12. Team administration.
+13. Member invitation and removal.
+14. Separation alerts.
+15. SOS functionality.
+16. Unit tests.
+17. Firebase emulator tests.
+18. Updated README.
+19. Build instructions.
+20. Debug APK if supported.
+
+Provide a final report showing which features are actually implemented and tested.
+
+---
+
+# 23. STRICT SCOPE CONTROL — DO NOT ADD ANYTHING ELSE
+
+This instruction is extremely important.
+
+I do NOT want the old Suraksha disaster management feature collection.
+
+I want a focused rescue team radar and mission tracking application.
+
+Do not add:
+
+- AI chatbot.
+- Gemini AI assistant.
+- AI rescue briefings.
+- Human detection.
+- Thermal detection.
+- UWB radar hardware.
+- Sensor dashboards.
+- SLAM.
+- 3D mapping.
+- Environment mapping.
+- Survivor registry.
+- Medical registry.
+- Drone controls.
+- Disaster analytics.
+- Unnecessary statistics.
+- Unrelated dashboards.
+- Unrelated modules.
+
+Do not invent extra features beyond the defined scope.
+
+Keep only the features required to make team mission tracking, radar, GPS sharing, membership management, security and SOS work properly.
+
+Do not delete shared infrastructure needed by these features.
+
+Do not break existing authentication unnecessarily.
+
+Do not replace real GPS with fake positions.
+
+Do not generate fake radar targets.
+
+The radar sweep is a visual animation only. All member markers must come from real, authorized GPS location records.
+
+Do not show strangers or unauthorized users.
+
+Do not allow a removed member to rejoin without explicit Team Admin reinstatement.
+
+---
+
+# FINAL OBJECTIVE
+
+Build SURAKSHA as a real-time, shared-mission rescue team radar application.
+
+Every member must log in using their own account.
+
+All authorized members must join the same mission.
+
+All members must see one another's live GPS positions on a radar-style screen and a real geographical map.
+
+The Team Admin must control membership and mission operations.
+
+Verified existing members may invite new members under the configured team policy.
+
+Once a member is removed by the administrator, only the administrator can reinstate that member.
+
+The entire experience should be simple, fast, reliable, secure, and focused on keeping rescue teams connected in the field.
+
+**DO NOT TURN THIS BACK INTO A GENERAL DISASTER MANAGEMENT APP. BUILD EXACTLY THE SYSTEM DESCRIBED ABOVE.**

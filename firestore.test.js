@@ -9,107 +9,173 @@ const fs = require("node:fs");
 let testEnv;
 const PROJECT_ID = process.env.GCP_PROJECT || "demo-no-project";
 const ADMIN_UID = "admin_100";
-const LEADER_UID = "leader_200";
-const OPERATOR_UID = "operator_300";
-const MEDIC_UID = "medic_350";
-const OBSERVER_UID = "observer_400";
+const TEAM_ADMIN_UID = "team_admin_200";
+const SENSOR_OP_UID = "sensor_op_300";
+const MEMBER_UID = "member_400";
+const MEMBER_EMAIL = "member.responder@suraksha.org";
+const BYPASS_UID = "member_bypass_401";
 const OUTSIDER_UID = "outsider_999";
 const ORG_ID = "org_ndrf_north";
-const OTHER_ORG_ID = "org_sdrf_south";
+const TEAM_ID = "team_alpha";
+const MISSION_ID = "mission_joshimath_01";
 
 const [emulatorHost, emulatorPortStr] = (process.env.FIRESTORE_EMULATOR_HOST || "127.0.0.1:8085").split(":");
 const emulatorPort = parseInt(emulatorPortStr, 10);
 
-async function seedOrgWithMembers() {
+function normalizeEmailKey(email) {
+  return email.trim().toLowerCase().replace(/[^a-z0-9]/g, "_");
+}
+
+async function seedWorkspace() {
   await testEnv.withSecurityRulesDisabled(async (ctx) => {
     const db = ctx.firestore();
     const now = new Date();
     const futureExpiry = Date.now() + 24 * 3600 * 1000;
-    await db.collection("organizations").doc(ORG_ID).set({
+    const orgRef = db.collection("organizations").doc(ORG_ID);
+
+    await orgRef.set({
       orgCode: "NDRF-N",
       orgName: "NDRF North Command",
       region: "Uttarakhand",
+      allowMemberInvites: false,
       createdByUid: ADMIN_UID,
       createdAt: now,
       updatedAt: now,
     });
-    await db.collection("organizations").doc(ORG_ID).collection("invites").doc("JOIN2026XK").set({
+
+    const members = [
+      [ADMIN_UID, "ORGANIZATION_ADMIN", "Cmdr. Admin", "ADM-01"],
+      [TEAM_ADMIN_UID, "TEAM_ADMIN", "Lead Officer", "LDR-02"],
+      [SENSOR_OP_UID, "SENSOR_OPERATOR", "Radar Tech", "SNS-03"],
+      [MEMBER_UID, "TEAM_MEMBER", "Field Member", "MBR-04"],
+    ];
+
+    for (const [uid, role, name, callsign] of members) {
+      await orgRef.collection("members").doc(uid).set({
+        userId: uid,
+        orgId: ORG_ID,
+        displayName: name,
+        callsign,
+        photoUrl: "",
+        role,
+        teamId: TEAM_ID,
+        status: "ACTIVE",
+        availability: "available",
+        inviteCode: "JOIN2026XK",
+        revokedByUid: "",
+        revokedAtMillis: 0,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    await orgRef.collection("invitations").doc("JOIN2026XK").set({
       orgId: ORG_ID,
       inviteCode: "JOIN2026XK",
-      defaultRole: "operator",
+      assignedRole: "TEAM_MEMBER",
+      targetTeamId: TEAM_ID,
+      targetMissionId: MISSION_ID,
+      targetEmail: "",
+      status: "approved",
       active: true,
       expiresAtMillis: futureExpiry,
-      maxUses: 5,
+      maxUses: 10,
       usedCount: 0,
       createdByUid: ADMIN_UID,
+      createdByRole: "ORGANIZATION_ADMIN",
+      approvedByUid: ADMIN_UID,
       createdAt: now,
       updatedAt: now,
     });
-    await db.collection("organizations").doc(ORG_ID).collection("invites").doc("EXPIRED99").set({
+
+    await orgRef.collection("invitations").doc("EXPIRED99").set({
       orgId: ORG_ID,
       inviteCode: "EXPIRED99",
-      defaultRole: "operator",
+      assignedRole: "TEAM_MEMBER",
+      targetTeamId: TEAM_ID,
+      targetMissionId: MISSION_ID,
+      targetEmail: "",
+      status: "approved",
       active: true,
-      expiresAtMillis: Date.now() - 60000,
+      expiresAtMillis: Date.now() - 60_000,
       maxUses: 5,
       usedCount: 0,
       createdByUid: ADMIN_UID,
+      createdByRole: "ORGANIZATION_ADMIN",
+      approvedByUid: ADMIN_UID,
       createdAt: now,
       updatedAt: now,
     });
-    await db.collection("organizations").doc(ORG_ID).collection("invites").doc("MAXEDOUT1").set({
+
+    await orgRef.collection("invitations").doc("MAXEDOUT1").set({
       orgId: ORG_ID,
       inviteCode: "MAXEDOUT1",
-      defaultRole: "operator",
+      assignedRole: "TEAM_MEMBER",
+      targetTeamId: TEAM_ID,
+      targetMissionId: MISSION_ID,
+      targetEmail: "",
+      status: "approved",
       active: true,
       expiresAtMillis: futureExpiry,
       maxUses: 1,
       usedCount: 1,
       createdByUid: ADMIN_UID,
+      createdByRole: "ORGANIZATION_ADMIN",
+      approvedByUid: ADMIN_UID,
       createdAt: now,
       updatedAt: now,
     });
-    const members = [
-      [ADMIN_UID, "org_admin", "Cmdr. Admin", "ADM-01", "team_alpha"],
-      [LEADER_UID, "team_leader", "Lead Officer", "LDR-02", "team_alpha"],
-      [OPERATOR_UID, "operator", "Field Scout", "OPS-03", "team_alpha"],
-      [MEDIC_UID, "medic", "Field Medic", "MED-05", "team_bravo"],
-      [OBSERVER_UID, "observer", "Observer", "OBS-04", "team_alpha"],
-    ];
-    for (const [uid, role, name, callsign, teamId] of members) {
-      await db.collection("organizations").doc(ORG_ID).collection("members").doc(uid).set({
+
+    await orgRef.collection("teams").doc(TEAM_ID).set({
+      orgId: ORG_ID,
+      teamCode: "NDRF-A1",
+      teamName: "Alpha Search Unit",
+      teamAdminUid: TEAM_ADMIN_UID,
+      allowMemberInvites: false,
+      memberCount: 4,
+      status: "deployed",
+      createdByUid: ADMIN_UID,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const missionRef = orgRef.collection("missions").doc(MISSION_ID);
+    await missionRef.set({
+      missionId: MISSION_ID,
+      orgId: ORG_ID,
+      teamId: TEAM_ID,
+      teamCode: "NDRF-A1",
+      title: "Sector 2 Collapsed Structure Search",
+      description: "UWB radar perimeter sweep and responder tracking",
+      environmentMode: "BUILDING_COLLAPSED",
+      status: "active",
+      separationAlertEnabled: true,
+      separationThresholdMeters: 150,
+      separationDelaySeconds: 20,
+      centerLatitude: 30.556,
+      centerLongitude: 79.566,
+      leaderUid: TEAM_ADMIN_UID,
+      createdByUid: ADMIN_UID,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    for (const [uid, role, name, callsign] of members) {
+      await missionRef.collection("missionMembers").doc(uid).set({
         userId: uid,
         orgId: ORG_ID,
+        missionId: MISSION_ID,
+        teamId: TEAM_ID,
         displayName: name,
         callsign,
+        photoUrl: "",
         role,
-        teamId,
-        availability: "available",
-        inviteCode: "JOIN2026XK",
+        status: "ACTIVE",
+        sharingEnabled: true,
         createdAt: now,
         updatedAt: now,
       });
     }
-    await db.collection("organizations").doc(OTHER_ORG_ID).set({
-      orgCode: "SDRF-S",
-      orgName: "SDRF South",
-      region: "Kerala",
-      createdByUid: OUTSIDER_UID,
-      createdAt: now,
-      updatedAt: now,
-    });
-    await db.collection("organizations").doc(OTHER_ORG_ID).collection("members").doc(OUTSIDER_UID).set({
-      userId: OUTSIDER_UID,
-      orgId: OTHER_ORG_ID,
-      displayName: "Outsider Admin",
-      callsign: "EXT-01",
-      role: "org_admin",
-      teamId: "team_south",
-      availability: "available",
-      inviteCode: "",
-      createdAt: now,
-      updatedAt: now,
-    });
   });
 }
 
@@ -133,570 +199,528 @@ beforeEach(async () => {
   if (testEnv) await testEnv.clearFirestore();
 });
 
-test("1. Unauthenticated users are denied across all org collections", async () => {
-  await seedOrgWithMembers();
+test("1. Unauthenticated users and outsiders are denied across org and mission collections", async () => {
+  await seedWorkspace();
   const unauthDb = testEnv.unauthenticatedContext().firestore();
-  await assertFails(unauthDb.collection("organizations").doc(ORG_ID).get());
-  await assertFails(unauthDb.collection("organizations").doc(ORG_ID).collection("teams").get());
-  await assertFails(unauthDb.collection("organizations").doc(ORG_ID).collection("sos_incidents").get());
-  await assertFails(unauthDb.collection("organizations").doc(ORG_ID).collection("registry").get());
-  await assertFails(unauthDb.collection("organizations").doc(ORG_ID).collection("missions").get());
-  await assertFails(unauthDb.collection("organizations").doc(ORG_ID).collection("activity_logs").get());
-});
-
-test("2. Authorized org members can read org data; outsiders are rejected (cross-org isolation)", async () => {
-  await seedOrgWithMembers();
-  const operatorDb = testEnv.authenticatedContext(OPERATOR_UID).firestore();
   const outsiderDb = testEnv.authenticatedContext(OUTSIDER_UID).firestore();
+  const missionRefUnauth = unauthDb.collection("organizations").doc(ORG_ID).collection("missions").doc(MISSION_ID);
+  const missionRefOut = outsiderDb.collection("organizations").doc(ORG_ID).collection("missions").doc(MISSION_ID);
 
-  await assertSucceeds(operatorDb.collection("organizations").doc(ORG_ID).get());
-  await assertSucceeds(operatorDb.collection("organizations").doc(ORG_ID).collection("teams").get());
-  await assertSucceeds(operatorDb.collection("organizations").doc(ORG_ID).collection("missions").get());
+  await assertFails(unauthDb.collection("organizations").doc(ORG_ID).get());
+  await assertFails(missionRefUnauth.collection("locations").get());
+  await assertFails(missionRefUnauth.collection("sensorEvents").get());
+  await assertFails(missionRefUnauth.collection("sosAlerts").get());
 
   await assertFails(outsiderDb.collection("organizations").doc(ORG_ID).get());
-  await assertFails(outsiderDb.collection("organizations").doc(ORG_ID).collection("teams").get());
-  await assertFails(outsiderDb.collection("organizations").doc(ORG_ID).collection("sos_incidents").get());
-  await assertFails(outsiderDb.collection("organizations").doc(ORG_ID).collection("missions").get());
+  await assertFails(missionRefOut.collection("locations").get());
+  await assertFails(missionRefOut.collection("sensorEvents").get());
+  await assertFails(missionRefOut.collection("sosAlerts").get());
 });
 
-test("3. Users cannot self-escalate privileges or join org as org_admin via invite", async () => {
-  await seedOrgWithMembers();
-  const outsiderDb = testEnv.authenticatedContext(OUTSIDER_UID).firestore();
-  const operatorDb = testEnv.authenticatedContext(OPERATOR_UID).firestore();
+test("2. RBAC prevents self-escalation, enforces allowMemberInvites toggle & admin invite approval", async () => {
+  await seedWorkspace();
+  const memberDb = testEnv.authenticatedContext(MEMBER_UID).firestore();
   const adminDb = testEnv.authenticatedContext(ADMIN_UID).firestore();
+  const outsiderDb = testEnv.authenticatedContext(OUTSIDER_UID, { email: "newjoiner@suraksha.org", email_verified: true }).firestore();
   const now = new Date();
+  const orgRefMember = memberDb.collection("organizations").doc(ORG_ID);
+  const orgRefAdmin = adminDb.collection("organizations").doc(ORG_ID);
 
-  // Outsider trying to join ORG_ID as org_admin via invite -> MUST FAIL
+  // Member cannot self-promote to ORGANIZATION_ADMIN
+  await assertFails(orgRefMember.collection("members").doc(MEMBER_UID).update({ role: "ORGANIZATION_ADMIN", updatedAt: now }));
+
+  // Member cannot create invites while org.allowMemberInvites == false
   await assertFails(
-    outsiderDb.collection("organizations").doc(ORG_ID).collection("members").doc(OUTSIDER_UID).set({
-      userId: OUTSIDER_UID,
+    orgRefMember.collection("invitations").doc("MEMBINV01").set({
       orgId: ORG_ID,
-      displayName: "Rogue Admin",
-      callsign: "ROG-01",
-      role: "org_admin",
-      teamId: "team_alpha",
-      availability: "available",
-      inviteCode: "JOIN2026XK",
-      createdAt: now,
-      updatedAt: now,
-    })
-  );
-
-  // Outsider joining as operator with valid invite & atomic usedCount batch -> SUCCEEDS
-  const joinBatch = outsiderDb.batch();
-  joinBatch.set(
-    outsiderDb.collection("organizations").doc(ORG_ID).collection("members").doc(OUTSIDER_UID),
-    {
-      userId: OUTSIDER_UID,
-      orgId: ORG_ID,
-      displayName: "Joined Operator",
-      callsign: "JND-09",
-      role: "operator",
-      teamId: "team_alpha",
-      availability: "available",
-      inviteCode: "JOIN2026XK",
-      createdAt: now,
-      updatedAt: now,
-    }
-  );
-  joinBatch.update(
-    outsiderDb.collection("organizations").doc(ORG_ID).collection("invites").doc("JOIN2026XK"),
-    {
-      usedCount: 1,
-      updatedAt: now,
-    }
-  );
-  await assertSucceeds(joinBatch.commit());
-
-  // Operator trying to promote themselves to org_admin -> MUST FAIL
-  await assertFails(
-    operatorDb.collection("organizations").doc(ORG_ID).collection("members").doc(OPERATOR_UID).update({
-      role: "org_admin",
-      updatedAt: now,
-    })
-  );
-
-  // Org admin promoting operator to team_leader -> SUCCEEDS
-  await assertSucceeds(
-    adminDb.collection("organizations").doc(ORG_ID).collection("members").doc(OPERATOR_UID).update({
-      role: "team_leader",
-      updatedAt: now,
-    })
-  );
-});
-
-test("4. Weak, expired, and exhausted invite codes are rejected", async () => {
-  await seedOrgWithMembers();
-  const adminDb = testEnv.authenticatedContext(ADMIN_UID).firestore();
-  const outsiderDb = testEnv.authenticatedContext(OUTSIDER_UID).firestore();
-  const now = new Date();
-
-  // Admin creating short <8 char invite -> MUST FAIL
-  await assertFails(
-    adminDb.collection("organizations").doc(ORG_ID).collection("invites").doc("BAD1").set({
-      orgId: ORG_ID,
-      inviteCode: "BAD1",
-      defaultRole: "operator",
-      active: true,
-      expiresAtMillis: Date.now() + 3600000,
-      maxUses: 10,
+      inviteCode: "MEMBINV01",
+      assignedRole: "TEAM_MEMBER",
+      targetTeamId: TEAM_ID,
+      targetMissionId: MISSION_ID,
+      targetEmail: "",
+      status: "pending_approval",
+      active: false,
+      expiresAtMillis: Date.now() + 3600_000,
+      maxUses: 1,
       usedCount: 0,
-      createdByUid: ADMIN_UID,
+      createdByUid: MEMBER_UID,
+      createdByRole: "TEAM_MEMBER",
+      approvedByUid: "",
       createdAt: now,
       updatedAt: now,
     })
   );
 
-  // Joining via expired invite -> MUST FAIL
+  // Admin enables allowMemberInvites
+  await assertSucceeds(orgRefAdmin.update({ allowMemberInvites: true, updatedAt: now }));
+
+  // Member still cannot create an immediately approved invite
+  await assertFails(
+    orgRefMember.collection("invitations").doc("MEMBINV02").set({
+      orgId: ORG_ID,
+      inviteCode: "MEMBINV02",
+      assignedRole: "TEAM_MEMBER",
+      targetTeamId: TEAM_ID,
+      targetMissionId: MISSION_ID,
+      targetEmail: "",
+      status: "approved",
+      active: true,
+      expiresAtMillis: Date.now() + 3600_000,
+      maxUses: 1,
+      usedCount: 0,
+      createdByUid: MEMBER_UID,
+      createdByRole: "TEAM_MEMBER",
+      approvedByUid: MEMBER_UID,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Member CAN create pending_approval invite when enabled
+  await assertSucceeds(
+    orgRefMember.collection("invitations").doc("MEMBINV03").set({
+      orgId: ORG_ID,
+      inviteCode: "MEMBINV03",
+      assignedRole: "TEAM_MEMBER",
+      targetTeamId: TEAM_ID,
+      targetMissionId: MISSION_ID,
+      targetEmail: "",
+      status: "pending_approval",
+      active: false,
+      expiresAtMillis: Date.now() + 3600_000,
+      maxUses: 1,
+      usedCount: 0,
+      createdByUid: MEMBER_UID,
+      createdByRole: "TEAM_MEMBER",
+      approvedByUid: "",
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Pending invite cannot be redeemed before admin approval
   await assertFails(
     outsiderDb.collection("organizations").doc(ORG_ID).collection("members").doc(OUTSIDER_UID).set({
       userId: OUTSIDER_UID,
       orgId: ORG_ID,
-      displayName: "Late Joiner",
-      callsign: "LAT-01",
-      role: "operator",
-      teamId: "",
+      displayName: "Unapproved Joiner",
+      callsign: "UNP-01",
+      photoUrl: "",
+      role: "TEAM_MEMBER",
+      teamId: TEAM_ID,
+      status: "ACTIVE",
       availability: "available",
-      inviteCode: "EXPIRED99",
+      inviteCode: "MEMBINV03",
+      revokedByUid: "",
+      revokedAtMillis: 0,
       createdAt: now,
       updatedAt: now,
     })
   );
 
-  // Joining via exhausted invite (usedCount == maxUses) -> MUST FAIL
-  await assertFails(
-    outsiderDb.collection("organizations").doc(ORG_ID).collection("members").doc(OUTSIDER_UID).set({
-      userId: OUTSIDER_UID,
-      orgId: ORG_ID,
-      displayName: "Maxed Joiner",
-      callsign: "MAX-01",
-      role: "operator",
-      teamId: "",
-      availability: "available",
-      inviteCode: "MAXEDOUT1",
-      createdAt: now,
+  // Admin approves invite, then outsider redeems via atomic batch
+  await assertSucceeds(
+    orgRefAdmin.collection("invitations").doc("MEMBINV03").update({
+      status: "approved",
+      active: true,
+      approvedByUid: ADMIN_UID,
       updatedAt: now,
     })
   );
-});
 
-test("5. Team location RBAC restricts updates to assigned/owned team and enforces monotonic timestamps", async () => {
-  await seedOrgWithMembers();
-  const leaderDb = testEnv.authenticatedContext(LEADER_UID).firestore();
-  const operatorDb = testEnv.authenticatedContext(OPERATOR_UID).firestore();
-  const medicDb = testEnv.authenticatedContext(MEDIC_UID).firestore();
-  const observerDb = testEnv.authenticatedContext(OBSERVER_UID).firestore();
-  const now = new Date();
-  const t1 = Date.now() - 5000;
-  const t2 = Date.now();
-
-  const teamBase = {
+  const batch = outsiderDb.batch();
+  batch.set(outsiderDb.collection("organizations").doc(ORG_ID).collection("members").doc(OUTSIDER_UID), {
+    userId: OUTSIDER_UID,
     orgId: ORG_ID,
-    userId: LEADER_UID,
-    leaderUid: LEADER_UID,
-    teamCode: "NDRF-A1",
-    teamName: "Alpha Swift Rescue",
-    memberCount: 10,
-    activeCount: 8,
-    status: "deployed",
-    locationSharingOptIn: true,
-    hasValidLocation: true,
-    latitude: 30.55,
-    longitude: 79.56,
-    accuracyMeters: 10,
-    locationTimestampMillis: t1,
-    locationUnavailableReason: "",
-    batteryPercent: 90,
-    connectionStatus: "online",
-    isSynthetic: false,
+    displayName: "Approved Joiner",
+    callsign: "APR-01",
+    photoUrl: "",
+    role: "TEAM_MEMBER",
+    teamId: TEAM_ID,
+    status: "ACTIVE",
+    availability: "available",
+    inviteCode: "MEMBINV03",
+    revokedByUid: "",
+    revokedAtMillis: 0,
     createdAt: now,
     updatedAt: now,
-  };
+  });
+  batch.update(outsiderDb.collection("organizations").doc(ORG_ID).collection("invitations").doc("MEMBINV03"), {
+    usedCount: 1,
+    updatedAt: now,
+  });
+  await assertSucceeds(batch.commit());
+});
 
-  await assertSucceeds(leaderDb.collection("organizations").doc(ORG_ID).collection("teams").doc("team_alpha").set(teamBase));
-  await assertSucceeds(leaderDb.collection("organizations").doc(ORG_ID).collection("teams").doc("team_bravo").set({
-    ...teamBase,
-    teamCode: "NDRF-B2",
-    teamName: "Bravo Med",
+test("3. Expired and exhausted invitations are rejected", async () => {
+  await seedWorkspace();
+  const outsiderDb = testEnv.authenticatedContext(OUTSIDER_UID).firestore();
+  const now = new Date();
+
+  for (const code of ["EXPIRED99", "MAXEDOUT1"]) {
+    await assertFails(
+      outsiderDb.collection("organizations").doc(ORG_ID).collection("members").doc(OUTSIDER_UID).set({
+        userId: OUTSIDER_UID,
+        orgId: ORG_ID,
+        displayName: "Bad Invite",
+        callsign: "BAD-01",
+        photoUrl: "",
+        role: "TEAM_MEMBER",
+        teamId: TEAM_ID,
+        status: "ACTIVE",
+        availability: "available",
+        inviteCode: code,
+        revokedByUid: "",
+        revokedAtMillis: 0,
+        createdAt: now,
+        updatedAt: now,
+      })
+    );
+  }
+});
+
+test("4. Critical Membership-Removal Rule: removed member is immediately revoked, blocked across UID & email, cannot self-reinstate, and only Admin can reinstate", async () => {
+  await seedWorkspace();
+  const adminDb = testEnv.authenticatedContext(ADMIN_UID).firestore();
+  const memberDb = testEnv.authenticatedContext(MEMBER_UID, { email: MEMBER_EMAIL, email_verified: true }).firestore();
+  const bypassDb = testEnv.authenticatedContext(BYPASS_UID, { email: MEMBER_EMAIL, email_verified: true }).firestore();
+  const now = new Date();
+  const emailKey = normalizeEmailKey(MEMBER_EMAIL);
+
+  // Confirm member initially can write own location in mission
+  const memberLocRef = memberDb.collection("organizations").doc(ORG_ID).collection("missions").doc(MISSION_ID).collection("locations").doc(MEMBER_UID);
+  await assertSucceeds(memberLocRef.set({
+    userId: MEMBER_UID,
+    orgId: ORG_ID,
+    missionId: MISSION_ID,
+    teamId: TEAM_ID,
+    displayName: "Field Member",
+    callsign: "MBR-04",
+    role: "TEAM_MEMBER",
+    sharingEnabled: true,
+    hasValidLocation: true,
+    latitude: 30.556,
+    longitude: 79.566,
+    accuracyMeters: 5.0,
+    headingDegrees: 90.0,
+    headingReliable: true,
+    batteryPercent: 88,
+    connectionStatus: "online",
+    locationTimestampMillis: Date.now(),
+    unavailableReason: "",
+    updatedAt: now,
   }));
 
-  // Observer cannot create teams
+  // Non-admin (TEAM_MEMBER) cannot block or revoke another member
   await assertFails(
-    observerDb.collection("organizations").doc(ORG_ID).collection("teams").doc("team_obs").set({
-      ...teamBase,
-      userId: OBSERVER_UID,
-    })
-  );
-
-  // Operator assigned to team_alpha CAN update team_alpha location with newer timestamp
-  await assertSucceeds(
-    operatorDb.collection("organizations").doc(ORG_ID).collection("teams").doc("team_alpha").update({
-      latitude: 30.56,
-      longitude: 79.57,
-      locationTimestampMillis: t2,
-      updatedAt: now,
-    })
-  );
-
-  // Operator assigned to team_alpha CANNOT spoof location of team_bravo!
-  await assertFails(
-    operatorDb.collection("organizations").doc(ORG_ID).collection("teams").doc("team_bravo").update({
-      latitude: 12.0,
-      longitude: 77.0,
-      locationTimestampMillis: t2,
-      updatedAt: now,
-    })
-  );
-
-  // Medic assigned to team_bravo CAN update team_bravo location, unless timestamp regresses (< t1)
-  await assertFails(
-    medicDb.collection("organizations").doc(ORG_ID).collection("teams").doc("team_bravo").update({
-      latitude: 30.58,
-      longitude: 79.59,
-      locationTimestampMillis: t1 - 2000, // regressive timestamp -> MUST FAIL
-      updatedAt: now,
-    })
-  );
-  await assertSucceeds(
-    medicDb.collection("organizations").doc(ORG_ID).collection("teams").doc("team_bravo").update({
-      latitude: 30.58,
-      longitude: 79.59,
-      locationTimestampMillis: t2,
-      updatedAt: now,
-    })
-  );
-});
-
-test("6. Invalid coordinates and future timestamps are rejected", async () => {
-  await seedOrgWithMembers();
-  const operatorDb = testEnv.authenticatedContext(OPERATOR_UID).firestore();
-  const now = new Date();
-  const futureDate = new Date(Date.now() + 3600 * 1000);
-
-  await assertFails(
-    operatorDb.collection("organizations").doc(ORG_ID).collection("locations").doc("bad_lat").set({
+    memberDb.collection("organizations").doc(ORG_ID).collection("blockedMemberships").doc(SENSOR_OP_UID).set({
+      userId: SENSOR_OP_UID,
       orgId: ORG_ID,
-      userId: OPERATOR_UID,
-      name: "Invalid Latitude Site",
-      region: "North",
-      hazardType: "flood",
-      severity: "high",
-      latitude: 120.5,
-      longitude: 78.0,
-      radiusMeters: 500,
-      verificationStatus: "unverified",
-      dataSource: "Field",
-      isSynthetic: false,
+      teamId: TEAM_ID,
+      missionId: MISSION_ID,
+      blockedByUid: MEMBER_UID,
+      reason: "Unauthorized",
+      blockedEmailNormalized: "",
+      blockedAtMillis: Date.now(),
+      createdAt: now,
+    })
+  );
+
+  // Organization Admin removes MEMBER_UID (marks REVOKED + writes blockedMemberships + blockedEmails + immutable audit log)
+  const removeBatch = adminDb.batch();
+  const adminOrgRef = adminDb.collection("organizations").doc(ORG_ID);
+  removeBatch.update(adminOrgRef.collection("members").doc(MEMBER_UID), {
+    status: "REVOKED",
+    revokedByUid: ADMIN_UID,
+    revokedAtMillis: Date.now(),
+    updatedAt: now,
+  });
+  removeBatch.set(adminOrgRef.collection("blockedMemberships").doc(MEMBER_UID), {
+    userId: MEMBER_UID,
+    orgId: ORG_ID,
+    teamId: TEAM_ID,
+    missionId: MISSION_ID,
+    blockedByUid: ADMIN_UID,
+    reason: "Misconduct during rescue drill",
+    blockedEmailNormalized: emailKey,
+    blockedAtMillis: Date.now(),
+    createdAt: now,
+  });
+  removeBatch.set(adminOrgRef.collection("blockedEmails").doc(emailKey), {
+    orgId: ORG_ID,
+    emailKey,
+    blockedUid: MEMBER_UID,
+    blockedByUid: ADMIN_UID,
+    createdAt: now,
+  });
+  removeBatch.set(adminOrgRef.collection("auditLogs").doc("audit_remove_1"), {
+    orgId: ORG_ID,
+    missionId: MISSION_ID,
+    teamId: TEAM_ID,
+    actorUid: ADMIN_UID,
+    actorName: "Cmdr. Admin",
+    category: "removal",
+    action: "REMOVE_MEMBER",
+    targetUid: MEMBER_UID,
+    summary: "Removed and blocked member_400",
+    createdAt: now,
+  });
+  await assertSucceeds(removeBatch.commit());
+
+  // Immediately invalidated: MEMBER_UID cannot read mission/team/org or update locations or create SOS
+  await assertFails(memberDb.collection("organizations").doc(ORG_ID).collection("missions").doc(MISSION_ID).get());
+  await assertFails(memberLocRef.set({
+    userId: MEMBER_UID,
+    orgId: ORG_ID,
+    missionId: MISSION_ID,
+    teamId: TEAM_ID,
+    displayName: "Field Member",
+    callsign: "MBR-04",
+    role: "TEAM_MEMBER",
+    sharingEnabled: true,
+    hasValidLocation: true,
+    latitude: 30.557,
+    longitude: 79.567,
+    accuracyMeters: 5.0,
+    headingDegrees: 90.0,
+    headingReliable: true,
+    batteryPercent: 87,
+    connectionStatus: "online",
+    locationTimestampMillis: Date.now(),
+    unavailableReason: "",
+    updatedAt: now,
+  }));
+
+  // Removed member CANNOT reinstate themselves or delete block docs
+  await assertFails(memberDb.collection("organizations").doc(ORG_ID).collection("blockedMemberships").doc(MEMBER_UID).delete());
+  await assertFails(memberDb.collection("organizations").doc(ORG_ID).collection("members").doc(MEMBER_UID).update({ status: "ACTIVE", updatedAt: now }));
+
+  // Removed member CANNOT rejoin using valid JOIN2026XK invite code
+  await assertFails(
+    memberDb.collection("organizations").doc(ORG_ID).collection("members").doc(MEMBER_UID).set({
+      userId: MEMBER_UID,
+      orgId: ORG_ID,
+      displayName: "Rejoin Attempt",
+      callsign: "REJ-01",
+      photoUrl: "",
+      role: "TEAM_MEMBER",
+      teamId: TEAM_ID,
+      status: "ACTIVE",
+      availability: "available",
+      inviteCode: "JOIN2026XK",
+      revokedByUid: "",
+      revokedAtMillis: 0,
       createdAt: now,
       updatedAt: now,
     })
   );
 
+  // Alternate account sharing same verified email CANNOT bypass block
   await assertFails(
-    operatorDb.collection("organizations").doc(ORG_ID).collection("locations").doc("future_ts").set({
+    bypassDb.collection("organizations").doc(ORG_ID).collection("members").doc(BYPASS_UID).set({
+      userId: BYPASS_UID,
       orgId: ORG_ID,
-      userId: OPERATOR_UID,
-      name: "Future Timestamp Site",
-      region: "North",
-      hazardType: "flood",
-      severity: "high",
-      latitude: 30.5,
-      longitude: 78.0,
-      radiusMeters: 500,
-      verificationStatus: "unverified",
-      dataSource: "Field",
-      isSynthetic: false,
-      createdAt: futureDate,
-      updatedAt: futureDate,
-    })
-  );
-});
-
-test("7. Simulated presence signals cannot be created or promoted as field_verified", async () => {
-  await seedOrgWithMembers();
-  const operatorDb = testEnv.authenticatedContext(OPERATOR_UID).firestore();
-  const now = new Date();
-
-  await assertFails(
-    operatorDb.collection("organizations").doc(ORG_ID).collection("presence_signals").doc("fake_verif").set({
-      orgId: ORG_ID,
-      userId: OPERATOR_UID,
-      locationId: "loc_1",
-      sectorLabel: "Sector B2",
-      signalType: "radar_respiration",
-      sourceKind: "simulated",
-      deviceId: "sim-uwb-1",
-      calibrationStatus: "nominal",
-      sensorHealth: "healthy",
-      latitude: 30.5,
-      longitude: 79.5,
-      hasCoordinates: true,
-      estimatedMinCount: 1,
-      estimatedMaxCount: 2,
-      confidencePercent: 80,
-      verificationStatus: "field_verified",
-      dataSource: "Sim",
-      verifiedByUid: OPERATOR_UID,
-      verificationNotes: "Auto",
-      observationTimestampMillis: Date.now(),
-      isSynthetic: true,
+      displayName: "Bypass Account",
+      callsign: "BYP-01",
+      photoUrl: "",
+      role: "TEAM_MEMBER",
+      teamId: TEAM_ID,
+      status: "ACTIVE",
+      availability: "available",
+      inviteCode: "JOIN2026XK",
+      revokedByUid: "",
+      revokedAtMillis: 0,
       createdAt: now,
       updatedAt: now,
     })
   );
 
-  const simRef = operatorDb.collection("organizations").doc(ORG_ID).collection("presence_signals").doc("sim_01");
+  // Admin cannot mark member ACTIVE while blockedMemberships still exists
+  await assertFails(adminOrgRef.collection("members").doc(MEMBER_UID).update({ status: "ACTIVE", updatedAt: now }));
+
+  // Authorized Org Admin deletes blocks, sets ACTIVE, and logs reinstatement audit
+  await assertSucceeds(adminOrgRef.collection("blockedMemberships").doc(MEMBER_UID).delete());
+  await assertSucceeds(adminOrgRef.collection("blockedEmails").doc(emailKey).delete());
   await assertSucceeds(
-    simRef.set({
-      orgId: ORG_ID,
-      userId: OPERATOR_UID,
-      locationId: "loc_1",
-      sectorLabel: "Sector C",
-      signalType: "thermal_ir",
-      sourceKind: "simulated",
-      deviceId: "sim-1",
-      calibrationStatus: "nominal",
-      sensorHealth: "healthy",
-      latitude: 30.5,
-      longitude: 79.5,
-      hasCoordinates: true,
-      estimatedMinCount: 1,
-      estimatedMaxCount: 2,
-      confidencePercent: 72,
-      verificationStatus: "estimated",
-      dataSource: "Sim FLIR",
-      verifiedByUid: "",
-      verificationNotes: "",
-      observationTimestampMillis: Date.now(),
-      isSynthetic: true,
-      createdAt: now,
+    adminOrgRef.collection("members").doc(MEMBER_UID).update({
+      status: "ACTIVE",
+      revokedByUid: "",
+      revokedAtMillis: 0,
       updatedAt: now,
+    })
+  );
+  await assertSucceeds(
+    adminOrgRef.collection("auditLogs").doc("audit_reinstate_1").set({
+      orgId: ORG_ID,
+      missionId: MISSION_ID,
+      teamId: TEAM_ID,
+      actorUid: ADMIN_UID,
+      actorName: "Cmdr. Admin",
+      category: "reinstatement",
+      action: "REINSTATE_MEMBER",
+      targetUid: MEMBER_UID,
+      summary: "Reinstated member_400 after review",
+      createdAt: now,
     })
   );
 
-  await assertFails(
-    simRef.update({
-      verificationStatus: "field_verified",
-      verifiedByUid: OPERATOR_UID,
-      verificationNotes: "Bypass attempt",
-      updatedAt: now,
-    })
-  );
+  // Access restored after Admin reinstatement!
+  await assertSucceeds(memberDb.collection("organizations").doc(ORG_ID).collection("missions").doc(MISSION_ID).get());
 });
 
-test("8. SOS state machine enforces ack attribution, immutable metadata, legal transitions, and closed lock", async () => {
-  await seedOrgWithMembers();
-  const operatorDb = testEnv.authenticatedContext(OPERATOR_UID).firestore();
-  const leaderDb = testEnv.authenticatedContext(LEADER_UID).firestore();
-  const outsiderDb = testEnv.authenticatedContext(OUTSIDER_UID).firestore();
+test("5. Sensor RBAC and SOS lifecycle + cancellation audit + immutable logs", async () => {
+  await seedWorkspace();
+  const memberDb = testEnv.authenticatedContext(MEMBER_UID).firestore();
+  const sensorOpDb = testEnv.authenticatedContext(SENSOR_OP_UID).firestore();
+  const adminDb = testEnv.authenticatedContext(ADMIN_UID).firestore();
   const now = new Date();
 
-  const sosRef = operatorDb.collection("organizations").doc(ORG_ID).collection("sos_incidents").doc("sos_001");
+  const missionMember = memberDb.collection("organizations").doc(ORG_ID).collection("missions").doc(MISSION_ID);
+  const missionSensor = sensorOpDb.collection("organizations").doc(ORG_ID).collection("missions").doc(MISSION_ID);
+  const missionAdmin = adminDb.collection("organizations").doc(ORG_ID).collection("missions").doc(MISSION_ID);
+
+  // TEAM_MEMBER cannot register sensorDevices or publish sensorEvents
+  await assertFails(
+    missionMember.collection("sensorDevices").doc("uwb_01").set({
+      sensorId: "uwb_01",
+      orgId: ORG_ID,
+      missionId: MISSION_ID,
+      sensorType: "uwb_life_detection_radar",
+      displayName: "Sector 2 UWB",
+      manufacturerModel: "UWB Wall Penetration Radar",
+      transportType: "gateway_http_tls",
+      connectionStatus: "connected",
+      hasPosition: true,
+      latitude: 30.556,
+      longitude: 79.566,
+      orientationDegrees: 45,
+      sectorWidthDegrees: 90,
+      maxRangeMeters: 30,
+      calibrationVersion: "cal-v1",
+      lastCalibrationMillis: Date.now(),
+      operatorUid: MEMBER_UID,
+      updatedAt: now,
+    })
+  );
+
+  // SENSOR_OPERATOR CAN register sensorDevice and ingest valid SensorEvent
+  await assertSucceeds(
+    missionSensor.collection("sensorDevices").doc("uwb_01").set({
+      sensorId: "uwb_01",
+      orgId: ORG_ID,
+      missionId: MISSION_ID,
+      sensorType: "uwb_life_detection_radar",
+      displayName: "Sector 2 UWB",
+      manufacturerModel: "UWB Wall Penetration Radar",
+      transportType: "gateway_http_tls",
+      connectionStatus: "connected",
+      hasPosition: true,
+      latitude: 30.556,
+      longitude: 79.566,
+      orientationDegrees: 45,
+      sectorWidthDegrees: 90,
+      maxRangeMeters: 30,
+      calibrationVersion: "cal-v1",
+      lastCalibrationMillis: Date.now(),
+      operatorUid: SENSOR_OP_UID,
+      updatedAt: now,
+    })
+  );
+
+  await assertSucceeds(
+    missionSensor.collection("sensorEvents").doc("evt_uwb_001").set({
+      eventId: "evt_uwb_001",
+      orgId: ORG_ID,
+      missionId: MISSION_ID,
+      sensorId: "uwb_01",
+      sensorType: "uwb_life_detection_radar",
+      timestampUtcMillis: Date.now() - 1000,
+      detectionType: "UNCLASSIFIED POSSIBLE HUMAN PRESENCE",
+      estimatedRangeMeters: 8.4,
+      estimatedAzimuthDegrees: 42.0,
+      estimatedElevationDegrees: null,
+      estimatedLatitude: 30.5561,
+      estimatedLongitude: 79.5661,
+      positionAccuracyMeters: 1.5,
+      confidence: 0.82,
+      signalQuality: "good",
+      detectionDurationSeconds: 12.0,
+      respirationRateBpm: 16.0,
+      sourceDevice: "EdgeGateway-Alpha",
+      calibrationVersion: "cal-v1",
+      rawDataReference: "frame://gw01/8821",
+      dataValidity: "valid",
+      status: "active",
+      operatorUid: SENSOR_OP_UID,
+      createdAt: now,
+    })
+  );
+
+  // Active member triggers SOS alert
+  const sosRef = missionMember.collection("sosAlerts").doc("sos_alpha_01");
   await assertSucceeds(
     sosRef.set({
-      incidentId: "sos_001",
+      alertId: "sos_alpha_01",
       orgId: ORG_ID,
-      senderUid: OPERATOR_UID,
-      senderName: "Field Scout",
-      teamCode: "NDRF-A1",
-      priority: "sos",
-      description: "Wall collapse near Sector 2 culvert.",
-      status: "delivered",
-      hasLocation: false,
-      latitude: 0,
-      longitude: 0,
-      accuracyMeters: 0,
-      assignedTeamId: "",
-      assignedTeamCode: "",
+      missionId: MISSION_ID,
+      senderUid: MEMBER_UID,
+      senderName: "Field Member",
+      teamId: TEAM_ID,
+      alertType: "sos",
+      priority: "critical",
+      status: "active",
+      hasLocation: true,
+      latitude: 30.556,
+      longitude: 79.566,
+      accuracyMeters: 6.0,
+      locationTimestampMillis: Date.now(),
+      description: "Structural shift blocked exit tunnel",
       acknowledgedByUid: "",
       acknowledgedAtMillis: 0,
+      cancelledByUid: "",
+      cancelReason: "",
+      notificationStatus: "pending_dispatch",
       deliveryNote: "Saved to Firestore",
-      notificationStatus: "pending_push",
       pushAttemptedCount: 0,
-      isSynthetic: false,
       createdAt: now,
       updatedAt: now,
     })
   );
 
-  // Outsider cannot read or update SOS
-  await assertFails(outsiderDb.collection("organizations").doc(ORG_ID).collection("sos_incidents").doc("sos_001").get());
-  await assertFails(
-    outsiderDb.collection("organizations").doc(ORG_ID).collection("sos_incidents").doc("sos_001").update({
-      status: "acknowledged",
-      updatedAt: now,
-    })
-  );
-
-  // Operator cannot close SOS directly or tamper with description
-  await assertFails(sosRef.update({ status: "closed", updatedAt: now }));
-  await assertFails(sosRef.update({ description: "Tampered", updatedAt: now }));
-
-  // Leader cannot spoof someone else's acknowledgedByUid
-  const leaderSosRef = leaderDb.collection("organizations").doc(ORG_ID).collection("sos_incidents").doc("sos_001");
-  await assertFails(
-    leaderSosRef.update({
-      status: "acknowledged",
-      acknowledgedByUid: OPERATOR_UID, // spoofing another user!
-      acknowledgedAtMillis: Date.now(),
-      updatedAt: now,
-    })
-  );
-
-  // Leader validly acknowledges SOS with own UID
+  // Cancellation without reason fails; cancellation with audit reason succeeds
+  await assertFails(sosRef.update({ status: "cancelled", cancelledByUid: MEMBER_UID, cancelReason: "", updatedAt: now }));
   await assertSucceeds(
-    leaderSosRef.update({
-      status: "acknowledged",
-      acknowledgedByUid: LEADER_UID,
-      acknowledgedAtMillis: Date.now(),
+    sosRef.update({
+      status: "cancelled",
+      cancelledByUid: MEMBER_UID,
+      cancelReason: "False trigger inside harness",
       updatedAt: now,
     })
   );
 
-  await assertSucceeds(
-    leaderSosRef.collection("audit_logs").doc("log_1").set({
-      orgId: ORG_ID,
-      incidentId: "sos_001",
-      actorUid: LEADER_UID,
-      fromStatus: "delivered",
-      toStatus: "acknowledged",
-      note: "Acknowledged by leader",
-      createdAt: now,
-    })
-  );
-
-  await assertSucceeds(leaderSosRef.update({ status: "closed", updatedAt: now }));
-
-  // Closed SOS cannot be reopened (even backwards or forward)
-  await assertFails(leaderSosRef.update({ status: "responding", updatedAt: now }));
-
-  // Client cannot forge server-side notification_dispatches proofs
+  // Cancelled SOS cannot reopen
   await assertFails(
-    leaderDb.collection("organizations").doc(ORG_ID).collection("notification_dispatches").doc("disp_fake").set({
-      incidentId: "sos_001",
-      status: "fcm_accepted",
-      createdAt: now,
-    })
-  );
-});
-
-test("9. Observer cannot write SOS/missions; org activity logs, blocked roads & user FCM tokens obey RBAC", async () => {
-  await seedOrgWithMembers();
-  const observerDb = testEnv.authenticatedContext(OBSERVER_UID).firestore();
-  const operatorDb = testEnv.authenticatedContext(OPERATOR_UID).firestore();
-  const leaderDb = testEnv.authenticatedContext(LEADER_UID).firestore();
-  const now = new Date();
-
-  await assertFails(
-    observerDb.collection("organizations").doc(ORG_ID).collection("sos_incidents").doc("sos_obs").set({
-      incidentId: "sos_obs",
-      orgId: ORG_ID,
-      senderUid: OBSERVER_UID,
-      senderName: "Observer",
-      teamCode: "OBS-04",
-      priority: "sos",
-      description: "Observer attempt",
-      status: "delivered",
-      hasLocation: false,
-      latitude: 0,
-      longitude: 0,
-      accuracyMeters: 0,
-      assignedTeamId: "",
-      assignedTeamCode: "",
-      acknowledgedByUid: "",
-      acknowledgedAtMillis: 0,
-      deliveryNote: "Attempt",
-      isSynthetic: false,
-      createdAt: now,
+    missionAdmin.collection("sosAlerts").doc("sos_alpha_01").update({
+      status: "responding",
       updatedAt: now,
     })
   );
 
-  // Leader can create mission; operator can only update status, not create
-  await assertFails(
-    operatorDb.collection("organizations").doc(ORG_ID).collection("missions").doc("m_01").set({
-      missionId: "m_01",
-      orgId: ORG_ID,
-      title: "Clear Ridge Road",
-      description: "Deploy unit",
-      linkedIncidentId: "sos_001",
-      assignedTeamId: "team_alpha",
-      assignedTeamCode: "NDRF-A1",
-      priority: "high",
-      status: "planned",
-      targetLatitude: 30.55,
-      targetLongitude: 79.56,
-      createdByUid: OPERATOR_UID,
-      createdAt: now,
-      updatedAt: now,
-    })
-  );
+  // Audit logs cannot be modified or deleted once created
   await assertSucceeds(
-    leaderDb.collection("organizations").doc(ORG_ID).collection("missions").doc("m_01").set({
-      missionId: "m_01",
+    adminDb.collection("organizations").doc(ORG_ID).collection("auditLogs").doc("audit_sos_1").set({
       orgId: ORG_ID,
-      title: "Clear Ridge Road",
-      description: "Deploy unit",
-      linkedIncidentId: "sos_001",
-      assignedTeamId: "team_alpha",
-      assignedTeamCode: "NDRF-A1",
-      priority: "high",
-      status: "planned",
-      targetLatitude: 30.55,
-      targetLongitude: 79.56,
-      createdByUid: LEADER_UID,
+      missionId: MISSION_ID,
+      teamId: TEAM_ID,
+      actorUid: ADMIN_UID,
+      actorName: "Cmdr. Admin",
+      category: "sos",
+      action: "TEST_AUDIT",
+      targetUid: MEMBER_UID,
+      summary: "Verified SOS audit trail",
       createdAt: now,
-      updatedAt: now,
     })
   );
-
-  // Operator can log blocked road & own FCM device token, cannot write another user's FCM token
-  await assertSucceeds(
-    operatorDb.collection("organizations").doc(ORG_ID).collection("blocked_roads").doc("road_1").set({
-      orgId: ORG_ID,
-      reportedByUid: OPERATOR_UID,
-      label: "NH-7 Culvert Washout",
-      latitude: 30.54,
-      longitude: 79.55,
-      severity: "blocked",
-      active: true,
-      notes: "Bridge submerged",
-      createdAt: now,
-      updatedAt: now,
-    })
-  );
-  await assertSucceeds(
-    operatorDb.collection("users").doc(OPERATOR_UID).collection("devices").doc("dev_01").set({
-      userId: OPERATOR_UID,
-      deviceId: "dev_01",
-      fcmToken: "fcm_valid_token_1234567890",
-      orgId: ORG_ID,
-      notificationsEnabled: true,
-      platform: "android",
-      updatedAt: now,
-    })
-  );
-  await assertFails(
-    operatorDb.collection("users").doc(LEADER_UID).collection("devices").doc("dev_01").set({
-      userId: LEADER_UID,
-      deviceId: "dev_01",
-      fcmToken: "fcm_spoofed_token_123456",
-      orgId: ORG_ID,
-      notificationsEnabled: true,
-      platform: "android",
-      updatedAt: now,
-    })
-  );
-});
-
-test("10. Legacy user-scoped data remains readable only by owner for migration", async () => {
-  await testEnv.withSecurityRulesDisabled(async (ctx) => {
-    await ctx.firestore().collection("users").doc(OPERATOR_UID).collection("rescue_locations").doc("leg_1").set({
-      name: "Legacy Ridge",
-    });
-  });
-  const operatorDb = testEnv.authenticatedContext(OPERATOR_UID).firestore();
-  const outsiderDb = testEnv.authenticatedContext(OUTSIDER_UID).firestore();
-  await assertSucceeds(operatorDb.collection("users").doc(OPERATOR_UID).collection("rescue_locations").get());
-  await assertFails(outsiderDb.collection("users").doc(OPERATOR_UID).collection("rescue_locations").get());
+  await assertFails(adminDb.collection("organizations").doc(ORG_ID).collection("auditLogs").doc("audit_sos_1").update({ summary: "Tampered" }));
+  await assertFails(adminDb.collection("organizations").doc(ORG_ID).collection("auditLogs").doc("audit_sos_1").delete());
 });

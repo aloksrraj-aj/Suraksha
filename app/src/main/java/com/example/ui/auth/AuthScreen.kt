@@ -14,10 +14,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
@@ -25,8 +25,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Radar
 import androidx.compose.material.icons.filled.Security
-import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -65,7 +65,7 @@ import com.example.ui.theme.CyanElectric
 import com.example.ui.theme.NavyDeep
 import com.example.ui.theme.NavyOutline
 import com.example.ui.theme.NavySurface
-import com.example.ui.theme.StatusEstimated
+import com.example.ui.theme.StatusVerified
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
@@ -124,7 +124,7 @@ fun AuthScreen(
             ) {
                 Image(
                     painter = painterResource(id = R.drawable.img_suraksha_banner_1794762444656),
-                    contentDescription = "Project Suraksha command topography",
+                    contentDescription = "Suraksha search-and-rescue topographic banner",
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize(),
                 )
@@ -135,7 +135,7 @@ fun AuthScreen(
                             Brush.verticalGradient(
                                 listOf(
                                     Color.Transparent,
-                                    NavyDeep.copy(alpha = 0.88f),
+                                    NavyDeep.copy(alpha = 0.9f),
                                 )
                             )
                         )
@@ -146,25 +146,25 @@ fun AuthScreen(
                         .padding(18.dp),
                 ) {
                     Surface(
-                        color = StatusEstimated.copy(alpha = 0.2f),
+                        color = StatusVerified.copy(alpha = 0.2f),
                         shape = RoundedCornerShape(6.dp),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, StatusEstimated),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, StatusVerified),
                     ) {
                         Text(
-                            text = "DEMO MODE READY • HUMANITARIAN RESCUE",
+                            text = "CIVILIAN HUMANITARIAN SEARCH & RESCUE",
                             style = MaterialTheme.typography.labelSmall,
-                            color = StatusEstimated,
+                            color = StatusVerified,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                         )
                     }
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        text = "PROJECT SURAKSHA",
+                        text = "SURAKSHA RADAR",
                         style = MaterialTheme.typography.displaySmall,
                         color = MaterialTheme.colorScheme.onBackground,
                     )
                     Text(
-                        text = "Disaster Rescue & Real-Time Environmental Mapping",
+                        text = "Hybrid Rescue Team Awareness & Sensor Presence Platform",
                         style = MaterialTheme.typography.bodyMedium,
                         color = CyanElectric,
                     )
@@ -181,30 +181,30 @@ fun AuthScreen(
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
                     Text(
-                        text = "Authorized Responder Access",
+                        text = "Responder Sign-In",
                         style = MaterialTheme.typography.titleLarge,
                         color = MaterialTheme.colorScheme.onSurface,
                     )
                     Text(
-                        text = "Sign in with your Google responder account to access Cloud Firestore rescue coordination, real-time team status, environmental SLAM simulations, and Gemini situational triage.",
+                        text = "Authenticate with your Google account to join an organization, track rescue teammates, view external radar sensor feeds, and coordinate emergency SOS dispatch.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
 
                     AuthCapabilityRow(
-                        icon = Icons.Filled.LocationOn,
-                        title = "Authoritative India Cartography",
-                        subtitle = "Complete J&K & Ladakh boundaries with LoC/LAC distinction and offline map packs."
+                        icon = Icons.Filled.Radar,
+                        title = "Hybrid Radar & Sensor Hub",
+                        subtitle = "Supports Mode A Building/Rubble UWB and Mode B Open-Area FMCW radars via encrypted Edge Gateway.",
                     )
                     AuthCapabilityRow(
-                        icon = Icons.Filled.Sensors,
-                        title = "Synthetic SLAM & Presence Estimation",
-                        subtitle = "500m×500m occupancy grid & 3D point cloud clearly distinguishing estimated vs verified signals."
+                        icon = Icons.Filled.LocationOn,
+                        title = "Live Team Map & Separation Alerts",
+                        subtitle = "Voluntary GPS sharing, authoritative India mapping with offline tiles, and leader/center separation alarms.",
                     )
                     AuthCapabilityRow(
                         icon = Icons.Filled.Security,
-                        title = "Zero-Trust & Voluntary Consent",
-                        subtitle = "No unauthorized tracking, PII masking, and strict humanitarian ethical safeguards."
+                        title = "Zero-Trust RBAC & Instant Revocation",
+                        subtitle = "Strict Organization/Team/Mission access rules, admin-controlled invitations, and immutable audit logs.",
                     )
 
                     if (errorMessage != null) {

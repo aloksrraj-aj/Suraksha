@@ -9,11 +9,10 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.example.data.local.SurakshaLocalDatabase
-import com.example.data.model.PresenceSignal
-import com.example.data.model.RescueLocation
-import com.example.data.model.RescueRegistryEntry
-import com.example.data.model.RescueTeam
-import com.example.data.model.SosIncident
+import com.example.data.local.SyncHistoryEntity
+import com.example.data.model.DetectionObservation
+import com.example.data.model.SosAlert
+import com.example.data.model.SosAlertStatus
 import com.example.data.model.SyncStatus
 import com.example.data.repository.SurakshaRepository
 import com.google.firebase.Firebase
@@ -40,7 +39,7 @@ class SurakshaSyncWorker(
             if (res.isSuccess) {
                 dao.deletePendingSyncOperation(op.operationId)
                 dao.insertSyncHistory(
-                    com.example.data.local.SyncHistoryEntity(
+                    SyncHistoryEntity(
                         operationId = op.operationId,
                         orgId = op.orgId,
                         entityType = op.entityType,
@@ -79,94 +78,54 @@ class SurakshaSyncWorker(
     ): kotlin.Result<Unit> {
         val json = JSONObject(payloadJson)
         val docId = json.optString("docId").takeIf { it.isNotBlank() } ?: operationId
+        val missionId = json.optString("missionId")
+        if (missionId.isBlank()) {
+            return kotlin.Result.failure(IllegalArgumentException("Missing missionId in queued operation"))
+        }
         return when (entityType) {
-            "create_location" -> repo.createRescueLocation(
-                orgId,
-                RescueLocation(
+            "create_sos" -> repo.createSosAlert(
+                SosAlert(
+                    alertId = docId,
                     orgId = orgId,
-                    userId = uid,
-                    name = json.optString("name"),
-                    region = json.optString("region"),
-                    hazardType = json.optString("hazardType"),
-                    severity = json.optString("severity"),
-                    latitude = json.optDouble("latitude"),
-                    longitude = json.optDouble("longitude"),
-                    verificationStatus = json.optString("verificationStatus", "unverified"),
-                    dataSource = json.optString("dataSource"),
-                    isSynthetic = json.optBoolean("isSynthetic", true),
-                ),
-                explicitId = docId,
-            ).map { }
-            "create_team" -> repo.createRescueTeam(
-                orgId,
-                RescueTeam(
-                    orgId = orgId,
-                    userId = uid,
-                    leaderUid = uid,
-                    teamCode = json.optString("teamCode"),
-                    teamName = json.optString("teamName"),
-                    memberCount = json.optLong("memberCount", 1L),
-                    activeCount = json.optLong("activeCount", 1L),
-                    status = json.optString("status", "standby"),
-                    locationSharingOptIn = json.optBoolean("locationSharingOptIn", false),
-                    locationUnavailableReason = "Synced from offline WorkManager queue",
-                    isSynthetic = json.optBoolean("isSynthetic", true),
-                ),
-                explicitId = docId,
-            ).map { }
-            "create_registry" -> repo.createRegistryEntry(
-                orgId,
-                RescueRegistryEntry(
-                    orgId = orgId,
-                    userId = uid,
-                    category = json.optString("category"),
-                    title = json.optString("title"),
-                    locationName = json.optString("locationName"),
-                    details = json.optString("details"),
-                    sensitiveContactMasked = json.optString("sensitiveContactMasked"),
-                    verificationStatus = json.optString("verificationStatus", "reported"),
-                    informationSource = json.optString("informationSource", "Offline Field Queue"),
-                    isSynthetic = json.optBoolean("isSynthetic", true),
-                ),
-                explicitId = docId,
-            ).map { }
-            "create_sos" -> repo.createSosIncident(
-                orgId,
-                SosIncident(
-                    orgId = orgId,
+                    missionId = missionId,
                     senderUid = uid,
-                    senderName = displayName,
-                    teamCode = json.optString("teamCode"),
-                    priority = json.optString("priority", "sos"),
-                    description = json.optString("description"),
+                    senderName = json.optString("senderName", displayName),
+                    teamId = json.optString("teamId"),
+                    alertType = json.optString("alertType", "sos"),
+                    priority = json.optString("priority", "critical"),
                     hasLocation = json.optBoolean("hasLocation", false),
                     latitude = json.optDouble("latitude", 0.0),
                     longitude = json.optDouble("longitude", 0.0),
                     accuracyMeters = json.optDouble("accuracyMeters", 0.0),
-                    isSynthetic = json.optBoolean("isSynthetic", false),
+                    locationTimestampMillis = json.optLong("locationTimestampMillis", System.currentTimeMillis()),
+                    description = json.optString("description"),
                 ),
                 explicitId = docId,
             ).map { }
-            "create_presence" -> repo.createPresenceSignal(
-                orgId,
-                PresenceSignal(
+
+            "cancel_sos" -> repo.transitionSosAlert(
+                orgId = orgId,
+                missionId = missionId,
+                alertId = json.optString("alertId", docId),
+                nextStatus = SosAlertStatus.CANCELLED,
+                actorName = displayName,
+                cancelReason = json.optString("cancelReason", "Cancelled by responder"),
+            )
+
+            "sensor_observation" -> repo.logDetectionObservation(
+                DetectionObservation(
+                    detectionId = docId,
                     orgId = orgId,
-                    userId = uid,
-                    locationId = json.optString("locationId", "sector_field"),
-                    sectorLabel = json.optString("sectorLabel"),
-                    signalType = json.optString("signalType", "thermal_ir"),
-                    sourceKind = json.optString("sourceKind", "simulated"),
-                    deviceId = json.optString("deviceId", "offline-sensor"),
-                    estimatedMinCount = json.optLong("estimatedMinCount", 1L),
-                    estimatedMaxCount = json.optLong("estimatedMaxCount", 2L),
-                    confidencePercent = json.optLong("confidencePercent", 50L),
-                    verificationStatus = "estimated",
-                    dataSource = json.optString("dataSource", "Offline Cached Telemetry"),
-                    observationTimestampMillis = json.optLong("observationTimestampMillis", System.currentTimeMillis()),
-                    isSynthetic = json.optBoolean("isSynthetic", true),
+                    missionId = missionId,
+                    sensorEventId = json.optString("sensorEventId"),
+                    sensorId = json.optString("sensorId"),
+                    operatorUid = uid,
+                    notes = json.optString("notes"),
+                    outcome = json.optString("outcome", "investigating"),
                 ),
                 explicitId = docId,
             ).map { }
+
             else -> kotlin.Result.failure(IllegalArgumentException("Unknown offline op: $entityType"))
         }
     }

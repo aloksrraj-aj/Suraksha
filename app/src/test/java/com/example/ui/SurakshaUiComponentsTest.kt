@@ -11,12 +11,22 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.test.core.app.ApplicationProvider
 import com.example.R
 import com.example.data.local.SurakshaSettings
+import com.example.data.location.CompassReliability
+import com.example.data.location.HeadingState
+import com.example.data.model.BlockedMembership
+import com.example.data.model.EnvironmentMode
+import com.example.data.model.OrgMember
 import com.example.data.model.OrgRole
+import com.example.data.model.RadarCategory
+import com.example.data.model.RadarTarget
 import com.example.data.network.NetworkState
+import com.example.data.repository.UiState
 import com.example.ui.components.DemoAndOfflineStatusBanner
-import com.example.ui.screens.SettingsScreen
+import com.example.ui.components.HybridRadarCanvas
+import com.example.ui.components.NoLiveSensorDataBanner
+import com.example.ui.screens.SettingsProfileScreen
+import com.example.ui.screens.TeamAdminScreen
 import com.example.ui.theme.SurakshaTheme
-import com.example.ui.viewmodel.DataUiState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -34,72 +44,167 @@ class SurakshaUiComponentsTest {
     val composeRule = createComposeRule()
 
     @Test
-    fun demoAndOfflineStatusBanner_displaysDemoOfflineAndPendingSyncQueueCount() {
+    fun banners_displayDevDemoOfflinePendingSyncAndNoLiveSensorData() {
         composeRule.setContent {
             SurakshaTheme(darkTheme = true) {
-                DemoAndOfflineStatusBanner(
-                    isDemoMode = true,
-                    isOfflineMode = true,
-                    networkState = NetworkState.OFFLINE,
-                    pendingSyncCount = 3,
-                    languageCode = "en",
+                androidx.compose.foundation.layout.Column {
+                    DemoAndOfflineStatusBanner(
+                        isDemoMode = true,
+                        isOfflineMode = true,
+                        networkState = NetworkState.OFFLINE,
+                        pendingSyncCount = 3,
+                        languageCode = "en",
+                    )
+                    NoLiveSensorDataBanner(languageCode = "en")
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithText("DEV DEMO MODE • TEST FIXTURES ONLY").assertIsDisplayed()
+        composeRule.onNodeWithText("OFFLINE MODE • CACHED DATA").assertIsDisplayed()
+        composeRule.onNodeWithText("3 pending write(s) queued for sync").assertIsDisplayed()
+        composeRule.onNodeWithText("NO LIVE SENSOR DATA — CONNECT A COMPATIBLE SENSOR").assertIsDisplayed()
+    }
+
+    @Test
+    fun hybridRadarCanvas_displaysOutOfRangeAndMissingDirectionBadges() {
+        val targets = listOf(
+            RadarTarget(
+                id = "t1",
+                category = RadarCategory.YELLOW_UNCLASSIFIED_PRESENCE,
+                title = "UNCLASSIFIED POSSIBLE HUMAN PRESENCE",
+                subtitle = "UWB-1",
+                distanceMeters = 350.0,
+                bearingDegrees = 45.0,
+                hasDirection = true,
+            ),
+            RadarTarget(
+                id = "t2",
+                category = RadarCategory.GREY_STALE_OR_UNCERTAIN,
+                title = "UNCLASSIFIED POSSIBLE HUMAN PRESENCE",
+                subtitle = "Acoustic-1",
+                distanceMeters = 25.0,
+                bearingDegrees = null,
+                hasDirection = false,
+            ),
+        )
+        composeRule.setContent {
+            SurakshaTheme(darkTheme = true) {
+                HybridRadarCanvas(
+                    targets = targets,
+                    radarRangeMeters = 100.0,
+                    environmentMode = EnvironmentMode.OPEN_AREA,
+                    headingState = HeadingState(0.0, CompassReliability.NO_COMPASS_HARDWARE),
+                    northUpMode = true,
+                    selectedTargetId = null,
+                    onTargetSelected = {},
                 )
             }
         }
         composeRule.waitForIdle()
 
-        composeRule.onNodeWithText("DEMO MODE • SYNTHETIC DATA").assertIsDisplayed()
-        composeRule.onNodeWithText("NO NETWORK").assertIsDisplayed()
-        composeRule.onNodeWithText("3 pending write(s) queued for Firestore sync").assertIsDisplayed()
+        composeRule.onNodeWithTag("hybrid_radar_canvas").assertIsDisplayed()
+        composeRule.onNodeWithTag("radar_overflow_badge").assertIsDisplayed()
+        composeRule.onNodeWithText("1 target(s) outside range").assertIsDisplayed()
+        composeRule.onNodeWithText("1 missing direction").assertIsDisplayed()
     }
 
     @Test
-    fun settingsScreen_lightThemeAndThemeToggleCallback_worksCorrectly() {
-        var toggledDarkTheme = true
+    fun teamAdminScreen_rendersRoleControlsAndReinstatesBlockedMember() {
+        var reinstatedUid = ""
+        composeRule.setContent {
+            SurakshaTheme(darkTheme = true) {
+                TeamAdminScreen(
+                    currentUserId = "admin_1",
+                    currentRole = OrgRole.ORGANIZATION_ADMIN,
+                    isMembershipRevoked = false,
+                    organizationState = UiState.Success(null),
+                    membersState = UiState.Success(
+                        listOf(
+                            OrgMember(
+                                userId = "op_2",
+                                orgId = "org_1",
+                                displayName = "Sensor Op",
+                                callsign = "SEN-2",
+                                role = OrgRole.SENSOR_OPERATOR.value,
+                            )
+                        )
+                    ),
+                    blockedMembersState = UiState.Success(
+                        listOf(
+                            BlockedMembership(
+                                userId = "blocked_9",
+                                orgId = "org_1",
+                                reason = "Left assignment",
+                            )
+                        )
+                    ),
+                    invitationsState = UiState.Success(emptyList()),
+                    teamsState = UiState.Success(emptyList()),
+                    auditLogsState = UiState.Success(emptyList()),
+                    onToggleAllowMemberInvites = {},
+                    onCreateInvitation = { _, _ -> },
+                    onApproveOrRejectInvite = { _, _ -> },
+                    onUpdateMemberRole = { _, _ -> },
+                    onRemoveAndBlockMember = { _, _ -> },
+                    onReinstateBlockedMember = { reinstatedUid = it.userId },
+                    onCreateTeam = { _, _ -> },
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("create_invite_btn").assertIsDisplayed()
+        composeRule.onNodeWithTag("reinstate_member_blocked_9").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        assertEquals("blocked_9", reinstatedUid)
+    }
+
+    @Test
+    fun settingsProfileScreen_themeToggleAndLanguageSelectionWorkCorrectly() {
+        var toggledDarkTheme = false
         var selectedLanguage = "en"
 
         composeRule.setContent {
             SurakshaTheme(darkTheme = false) {
-                SettingsScreen(
+                SettingsProfileScreen(
                     settings = SurakshaSettings(
-                        demoModeEnabled = false,
+                        devDemoModeEnabled = false,
                         offlineMapMode = false,
                         darkThemeEnabled = false,
                         languageCode = "en",
                     ),
                     networkState = NetworkState.ONLINE_UNMETERED,
-                    currentRole = OrgRole.ORG_ADMIN,
-                    profileState = DataUiState.Success(null),
-                    organizationState = DataUiState.Success(null),
-                    membersState = DataUiState.Success(emptyList()),
-                    invitesState = DataUiState.Success(emptyList()),
+                    currentRole = OrgRole.ORGANIZATION_ADMIN,
+                    profileState = UiState.Success(null),
                     offlineRegions = emptyList(),
+                    downloadProgress = emptyMap(),
+                    totalCachedTiles = 0,
+                    totalCachedBytes = 0L,
                     pendingSyncOps = emptyList(),
-                    onToggleDemoMode = {},
-                    onToggleOfflineMode = {},
-                    onTogglePiiReveal = {},
+                    syncHistory = emptyList(),
+                    onUpdateProfile = { _, _, _ -> },
                     onToggleDarkTheme = { toggledDarkTheme = it },
                     onSetLanguage = { selectedLanguage = it },
-                    onSeedDemoData = {},
-                    onCreateOrganization = { _, _, _ -> },
-                    onJoinOrganization = { _, _, _ -> },
-                    onGenerateInvite = { _, _ -> },
-                    onUpdateMemberRole = { _, _ -> },
-                    onMigrateLegacyData = {},
+                    onToggleOfflineMapMode = {},
+                    onStartRegionDownload = {},
+                    onCancelRegionDownload = {},
+                    onDeleteRegionCache = {},
                     onFlushSyncQueue = {},
+                    onSyncPushToken = {},
                     onSignOut = {},
                 )
             }
         }
         composeRule.waitForIdle()
 
-        composeRule.onNodeWithText("Appearance, Language & Mode").assertIsDisplayed()
-        composeRule.onNodeWithTag("create_invite_button").assertIsDisplayed()
+        composeRule.onNodeWithText("Appearance & Localization").assertIsDisplayed()
         composeRule.onNodeWithTag("theme_toggle_switch").performScrollTo().performClick()
         composeRule.waitForIdle()
         assertTrue(toggledDarkTheme)
 
-        composeRule.onNodeWithTag("lang_chip_hi").performScrollTo().performClick()
+        composeRule.onNodeWithText("हिन्दी").performScrollTo().performClick()
         composeRule.waitForIdle()
         assertEquals("hi", selectedLanguage)
     }
@@ -114,6 +219,9 @@ class SurakshaUiComponentsTest {
 
         assertEquals("Suraksha", baseContext.getString(R.string.app_name))
         assertEquals("सुरक्षा", hiContext.getString(R.string.app_name))
-        assertEquals("SOS अलर्ट भेजें", hiContext.getString(R.string.sos_button_label))
+        assertEquals("Send Emergency SOS", baseContext.getString(R.string.sos_button_label))
+        assertEquals("आपातकालीन SOS भेजें", hiContext.getString(R.string.sos_button_label))
+        assertEquals("NO LIVE SENSOR DATA — CONNECT A COMPATIBLE SENSOR", baseContext.getString(R.string.no_live_sensor_data))
+        assertEquals("कोई लाइव सेंसर डेटा नहीं — संगत सेंसर कनेक्ट करें", hiContext.getString(R.string.no_live_sensor_data))
     }
 }

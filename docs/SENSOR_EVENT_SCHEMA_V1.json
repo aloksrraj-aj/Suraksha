@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://suraksha.rescue/schemas/sensor-event-v1.json",
+  "title": "Suraksha Normalized Sensor Event v1.0.0",
+  "description": "Neutral, non-tactical external hardware detection event contract delivered from Edge Gateways / Sensor Hubs to Suraksha.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "eventId",
+    "sensorId",
+    "sensorType",
+    "timestampUtcMillis",
+    "detectionType",
+    "confidence",
+    "signalQuality",
+    "sourceDevice",
+    "calibrationVersion",
+    "rawDataReference"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0.0"
+    },
+    "eventId": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 128
+    },
+    "sensorId": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 128
+    },
+    "sensorType": {
+      "type": "string",
+      "enum": [
+        "uwb_life_detection_radar",
+        "fmcw_radar",
+        "thermal_imaging",
+        "acoustic_vibration",
+        "registered_ble_tag",
+        "uwb_ranging_tag"
+      ]
+    },
+    "timestampUtcMillis": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "detectionType": {
+      "type": "string",
+      "description": "Civilian humanitarian label, e.g. 'UNCLASSIFIED POSSIBLE HUMAN PRESENCE'"
+    },
+    "estimatedRangeMeters": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 5000
+    },
+    "estimatedAzimuthDegrees": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 360
+    },
+    "estimatedElevationDegrees": {
+      "type": ["number", "null"],
+      "minimum": -90,
+      "maximum": 90
+    },
+    "estimatedLatitude": {
+      "type": ["number", "null"],
+      "minimum": -90,
+      "maximum": 90
+    },
+    "estimatedLongitude": {
+      "type": ["number", "null"],
+      "minimum": -180,
+      "maximum": 180
+    },
+    "positionAccuracyMeters": {
+      "type": ["number", "null"],
+      "minimum": 0
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "signalQuality": {
+      "type": "string",
+      "enum": ["good", "fair", "poor", "unusable"]
+    },
+    "detectionDurationSeconds": {
+      "type": ["number", "null"],
+      "minimum": 0
+    },
+    "respirationRateBpm": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 120
+    },
+    "sourceDevice": {
+      "type": "string"
+    },
+    "calibrationVersion": {
+      "type": "string"
+    },
+    "rawDataReference": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": true
+}

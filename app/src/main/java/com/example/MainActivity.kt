@@ -10,7 +10,6 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -18,31 +17,20 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Assignment
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Groups
-import androidx.compose.material.icons.filled.Map
-import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.PersonSearch
 import androidx.compose.material.icons.filled.Radar
 import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Shield
-import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalDrawerSheet
-import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
-import androidx.compose.material3.NavigationDrawerItem
-import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
@@ -52,7 +40,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -74,9 +61,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
-import com.example.data.ai.SurakshaAiRepository
 import com.example.data.firebase.configureAppCheck
 import com.example.data.local.OfflineCacheRepository
+import com.example.data.local.SecureTokenStorage
 import com.example.data.local.SurakshaLocalDatabase
 import com.example.data.local.SurakshaPreferences
 import com.example.data.local.SurakshaSettings
@@ -88,14 +75,11 @@ import com.example.data.repository.SurakshaRepository
 import com.example.data.sync.OfflineSyncManager
 import com.example.ui.auth.AuthScreen
 import com.example.ui.auth.signOutResponder
-import com.example.ui.screens.EnvironmentMappingScreen
-import com.example.ui.screens.HumanPresenceScreen
-import com.example.ui.screens.LiveMapScreen
-import com.example.ui.screens.OverviewScreen
-import com.example.ui.screens.RescueRegistryScreen
-import com.example.ui.screens.RescueTeamsScreen
-import com.example.ui.screens.SensorStatusScreen
-import com.example.ui.screens.SettingsScreen
+import com.example.ui.screens.MissionsDashboardScreen
+import com.example.ui.screens.RadarMapScreen
+import com.example.ui.screens.SensorsHubScreen
+import com.example.ui.screens.SettingsProfileScreen
+import com.example.ui.screens.TeamAdminScreen
 import com.example.ui.theme.StatusEstimated
 import com.example.ui.theme.SurakshaTheme
 import com.example.ui.viewmodel.SurakshaViewModel
@@ -110,16 +94,12 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.launch
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // STEP 1: Configure App Check with launch intent before any UI or Firebase operations
         configureAppCheck(this, intent)
-
         enableEdgeToEdge()
         setContent {
             val prefs = remember { SurakshaPreferences(applicationContext) }
@@ -151,6 +131,8 @@ fun SurakshaRootApp(auth: FirebaseAuth = Firebase.auth) {
             SurakshaAuthenticatedShell(
                 currentUserId = user.uid,
                 displayName = user.displayName ?: "Suraksha Responder",
+                email = user.email.orEmpty(),
+                photoUrl = user.photoUrl?.toString().orEmpty(),
             )
         }
     }
@@ -161,6 +143,8 @@ fun SurakshaRootApp(auth: FirebaseAuth = Firebase.auth) {
 fun SurakshaAuthenticatedShell(
     currentUserId: String,
     displayName: String,
+    email: String,
+    photoUrl: String,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -190,9 +174,11 @@ fun SurakshaAuthenticatedShell(
                     syncManager = syncManager,
                     locationController = SurakshaLocationController(app),
                     preferences = SurakshaPreferences(app),
-                    aiRepository = SurakshaAiRepository(),
+                    tokenStorage = SecureTokenStorage(app),
                     currentUserId = currentUserId,
                     initialDisplayName = displayName,
+                    initialEmail = email,
+                    initialPhotoUrl = photoUrl,
                 )
             }
         }
@@ -201,38 +187,36 @@ fun SurakshaAuthenticatedShell(
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val networkState by viewModel.networkState.collectAsStateWithLifecycle()
     val activeOrgId by viewModel.activeOrgId.collectAsStateWithLifecycle()
-    val currentRole by viewModel.currentMemberRole.collectAsStateWithLifecycle()
+    val currentRole by viewModel.currentRole.collectAsStateWithLifecycle()
+    val isMembershipRevoked by viewModel.isMembershipRevoked.collectAsStateWithLifecycle()
     val profileState by viewModel.userProfileState.collectAsStateWithLifecycle()
     val orgState by viewModel.currentOrganization.collectAsStateWithLifecycle()
+    val joinedOrgs by viewModel.joinedOrgs.collectAsStateWithLifecycle()
     val membersState by viewModel.orgMembersState.collectAsStateWithLifecycle()
-    val invitesState by viewModel.orgInvitesState.collectAsStateWithLifecycle()
-    val teamsState by viewModel.rescueTeamsState.collectAsStateWithLifecycle()
-    val locationsState by viewModel.rescueLocationsState.collectAsStateWithLifecycle()
-    val signalsState by viewModel.presenceSignalsState.collectAsStateWithLifecycle()
-    val registryState by viewModel.rescueRegistryState.collectAsStateWithLifecycle()
-    val incidentsState by viewModel.sosIncidentsState.collectAsStateWithLifecycle()
+    val blockedMembersState by viewModel.blockedMembersState.collectAsStateWithLifecycle()
+    val invitationsState by viewModel.invitationsState.collectAsStateWithLifecycle()
+    val teamsState by viewModel.teamsState.collectAsStateWithLifecycle()
+    val missionsState by viewModel.missionsState.collectAsStateWithLifecycle()
+    val activeMission by viewModel.activeMission.collectAsStateWithLifecycle()
+    val auditLogsState by viewModel.auditLogsState.collectAsStateWithLifecycle()
+    val effectiveMemberLocations by viewModel.effectiveMemberLocations.collectAsStateWithLifecycle()
+    val effectiveSensorDevices by viewModel.effectiveSensorDevices.collectAsStateWithLifecycle()
+    val effectiveSensorEvents by viewModel.effectiveSensorEvents.collectAsStateWithLifecycle()
+    val radarTargets by viewModel.radarTargets.collectAsStateWithLifecycle()
+    val sosAlertsState by viewModel.sosAlertsState.collectAsStateWithLifecycle()
+    val separationWarnings by viewModel.separationWarnings.collectAsStateWithLifecycle()
+    val locationFixState by viewModel.locationFixState.collectAsStateWithLifecycle()
+    val headingState by viewModel.headingState.collectAsStateWithLifecycle()
+    val mapLayers by viewModel.mapLayers.collectAsStateWithLifecycle()
+    val mapSearchResults by viewModel.mapSearchResults.collectAsStateWithLifecycle()
     val offlineRegions by viewModel.offlineRegions.collectAsStateWithLifecycle()
     val downloadProgress by viewModel.downloadProgress.collectAsStateWithLifecycle()
     val totalCachedTiles by viewModel.totalCachedTileCount.collectAsStateWithLifecycle()
     val totalCachedBytes by viewModel.totalCachedBytes.collectAsStateWithLifecycle()
     val pendingSyncOps by viewModel.pendingSyncOps.collectAsStateWithLifecycle()
-    val cachedSensorLogs by viewModel.cachedSensorLogs.collectAsStateWithLifecycle()
-    val slamSessions by viewModel.slamSessions.collectAsStateWithLifecycle()
-    val mapLayers by viewModel.mapLayers.collectAsStateWithLifecycle()
-    val mapSearchResults by viewModel.mapSearchResults.collectAsStateWithLifecycle()
-    val deviceLocation by viewModel.locationFixState.collectAsStateWithLifecycle()
-    val selectedScenario by viewModel.selectedScenario.collectAsStateWithLifecycle()
-    val sweepProgress by viewModel.sweepProgress.collectAsStateWithLifecycle()
-    val isScanning by viewModel.isSlamScanning.collectAsStateWithLifecycle()
-    val slamFrame by viewModel.slamFrame.collectAsStateWithLifecycle()
-    val sensorAdapters by viewModel.sensorAdapters.collectAsStateWithLifecycle()
-    val aiTriageState by viewModel.aiTriageState.collectAsStateWithLifecycle()
-    val aiChatAnswer by viewModel.aiChatAnswer.collectAsStateWithLifecycle()
-    val aiChatLoading by viewModel.aiChatLoading.collectAsStateWithLifecycle()
-    val exportedReportText by viewModel.exportedReportText.collectAsStateWithLifecycle()
-    val dashboardFilter by viewModel.dashboardFilter.collectAsStateWithLifecycle()
-    val analytics by viewModel.analytics.collectAsStateWithLifecycle()
-    val statusMessage by viewModel.actionStatusMessage.collectAsStateWithLifecycle()
+    val syncHistory by viewModel.syncHistory.collectAsStateWithLifecycle()
+    val gatewayStatusText by viewModel.gatewayStatusText.collectAsStateWithLifecycle()
+    val actionMessage by viewModel.actionMessage.collectAsStateWithLifecycle()
 
     val localizedContext = remember(context, settings.languageCode) {
         val config = Configuration(context.resources.configuration).apply {
@@ -241,342 +225,256 @@ fun SurakshaAuthenticatedShell(
         context.createConfigurationContext(config)
     }
 
-    var currentSection by rememberSaveable { mutableStateOf(SurakshaSection.OVERVIEW) }
-    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    var currentSection by rememberSaveable { mutableStateOf(SurakshaSection.MISSIONS) }
     val snackbarHostState = remember { SnackbarHostState() }
 
-    LaunchedEffect(statusMessage) {
-        statusMessage?.let {
-            snackbarHostState.showSnackbar(it)
-            viewModel.clearStatusMessage()
+    LaunchedEffect(activeOrgId) {
+        if (activeOrgId.isNotBlank()) {
+            viewModel.syncPushRegistration()
         }
     }
 
-    if (currentSection != SurakshaSection.OVERVIEW) {
-        BackHandler { currentSection = SurakshaSection.OVERVIEW }
+    LaunchedEffect(actionMessage) {
+        actionMessage?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.clearActionMessage()
+        }
     }
 
-    val primaryBottomTabs = remember {
+    if (currentSection != SurakshaSection.MISSIONS) {
+        BackHandler { currentSection = SurakshaSection.MISSIONS }
+    }
+
+    val primaryTabs = remember {
         listOf(
-            SurakshaSection.OVERVIEW,
-            SurakshaSection.LIVE_MAP,
-            SurakshaSection.ENV_MAPPING,
-            SurakshaSection.HUMAN_PRESENCE,
-            SurakshaSection.RESCUE_REGISTRY,
+            SurakshaSection.MISSIONS,
+            SurakshaSection.RADAR,
+            SurakshaSection.SENSORS,
+            SurakshaSection.TEAM,
         )
     }
 
-    ModalNavigationDrawer(
-        drawerState = drawerState,
-        drawerContent = {
-            ModalDrawerSheet(
-                drawerContainerColor = MaterialTheme.colorScheme.surface,
-                drawerContentColor = MaterialTheme.colorScheme.onSurface,
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        modifier = Modifier.padding(bottom = 12.dp),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Shield,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(28.dp),
-                        )
-                        Column {
-                            Text("PROJECT SURAKSHA", style = MaterialTheme.typography.titleLarge)
-                            Text(
-                                text = currentRole.label,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary,
-                            )
-                        }
-                    }
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val useRail = maxWidth >= 700.dp
 
+        Row(modifier = Modifier.fillMaxSize()) {
+            if (useRail) {
+                NavigationRail(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    modifier = Modifier.fillMaxHeight(),
+                ) {
+                    Spacer(Modifier.weight(0.1f))
                     SurakshaSection.entries.forEach { section ->
-                        NavigationDrawerItem(
-                            icon = { Icon(sectionIcon(section), contentDescription = null) },
-                            label = { Text(sectionLocalizedTitle(localizedContext, section)) },
+                        val title = sectionLocalizedTitle(localizedContext, section)
+                        NavigationRailItem(
                             selected = currentSection == section,
-                            onClick = {
-                                currentSection = section
-                                scope.launch { drawerState.close() }
-                            },
-                            colors = NavigationDrawerItemDefaults.colors(
-                                selectedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                                selectedIconColor = MaterialTheme.colorScheme.primary,
-                                selectedTextColor = MaterialTheme.colorScheme.primary,
-                            ),
-                            modifier = Modifier.testTag("drawer_nav_${section.route}"),
+                            onClick = { currentSection = section },
+                            icon = { Icon(sectionIcon(section), contentDescription = title) },
+                            label = { Text(title, style = MaterialTheme.typography.labelSmall) },
                         )
                     }
+                    Spacer(Modifier.weight(1f))
                 }
             }
-        },
-    ) {
-        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-            val useRail = maxWidth >= 700.dp
 
-            Row(modifier = Modifier.fillMaxSize()) {
-                if (useRail) {
-                    NavigationRail(
-                        containerColor = MaterialTheme.colorScheme.surface,
-                        modifier = Modifier.fillMaxHeight(),
-                    ) {
-                        Spacer(Modifier.weight(0.1f))
-                        SurakshaSection.entries.forEach { section ->
-                            val title = sectionLocalizedTitle(localizedContext, section)
-                            NavigationRailItem(
-                                selected = currentSection == section,
-                                onClick = { currentSection = section },
-                                icon = { Icon(sectionIcon(section), contentDescription = title) },
-                                label = { Text(title, style = MaterialTheme.typography.labelSmall) },
-                            )
-                        }
-                        Spacer(Modifier.weight(1f))
-                    }
-                }
-
-                Scaffold(
-                    containerColor = MaterialTheme.colorScheme.background,
-                    snackbarHost = { SnackbarHost(snackbarHostState) },
-                    contentWindowInsets = WindowInsets.navigationBars,
-                    topBar = {
-                        TopAppBar(
-                            colors = TopAppBarDefaults.topAppBarColors(
-                                containerColor = MaterialTheme.colorScheme.surface,
-                                titleContentColor = MaterialTheme.colorScheme.onSurface,
-                            ),
-                            navigationIcon = {
-                                IconButton(
-                                    onClick = { scope.launch { drawerState.open() } },
-                                    modifier = Modifier.testTag("open_drawer_button"),
-                                ) {
-                                    Icon(Icons.Filled.Menu, contentDescription = "Open all 8 navigation sections")
-                                }
-                            },
-                            title = {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                ) {
-                                    Text(
-                                        text = sectionLocalizedTitle(localizedContext, currentSection),
-                                        style = MaterialTheme.typography.titleLarge,
-                                    )
-                                    if (settings.demoModeEnabled) {
-                                        Surface(
-                                            color = StatusEstimated.copy(alpha = 0.16f),
-                                            shape = RoundedCornerShape(6.dp),
-                                            border = BorderStroke(1.dp, StatusEstimated.copy(alpha = 0.6f)),
-                                        ) {
-                                            Text(
-                                                text = "DEMO",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = StatusEstimated,
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                            )
-                                        }
+            Scaffold(
+                containerColor = MaterialTheme.colorScheme.background,
+                snackbarHost = { SnackbarHost(snackbarHostState) },
+                contentWindowInsets = WindowInsets.navigationBars,
+                topBar = {
+                    TopAppBar(
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = MaterialTheme.colorScheme.surface,
+                            titleContentColor = MaterialTheme.colorScheme.onSurface,
+                        ),
+                        title = {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Text(
+                                    text = sectionLocalizedTitle(localizedContext, currentSection),
+                                    style = MaterialTheme.typography.titleLarge,
+                                )
+                                if (settings.devDemoModeEnabled) {
+                                    Surface(
+                                        color = StatusEstimated.copy(alpha = 0.16f),
+                                        shape = RoundedCornerShape(6.dp),
+                                        border = BorderStroke(1.dp, StatusEstimated.copy(alpha = 0.6f)),
+                                    ) {
+                                        Text(
+                                            text = "DEMO",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = StatusEstimated,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                        )
                                     }
                                 }
-                            },
-                            actions = {
-                                IconButton(
-                                    onClick = { currentSection = SurakshaSection.RESCUE_TEAMS },
-                                    modifier = Modifier.testTag("topbar_teams_button"),
-                                ) {
-                                    Icon(Icons.Filled.Groups, contentDescription = "Rescue Teams", tint = MaterialTheme.colorScheme.primary)
-                                }
-                                IconButton(
-                                    onClick = { currentSection = SurakshaSection.SENSOR_STATUS },
-                                    modifier = Modifier.testTag("topbar_sensors_button"),
-                                ) {
-                                    Icon(Icons.Filled.Sensors, contentDescription = "Sensor Status", tint = MaterialTheme.colorScheme.primary)
-                                }
-                            },
-                        )
-                    },
-                    bottomBar = {
-                        if (!useRail) {
-                            NavigationBar(
-                                containerColor = MaterialTheme.colorScheme.surface,
-                                tonalElevation = 0.dp,
-                                windowInsets = WindowInsets.navigationBars,
-                            ) {
-                                primaryBottomTabs.forEach { section ->
-                                    val label = sectionLocalizedTitle(localizedContext, section)
-                                    NavigationBarItem(
-                                        selected = currentSection == section,
-                                        onClick = { currentSection = section },
-                                        icon = { Icon(sectionIcon(section), contentDescription = label) },
-                                        label = { Text(label, maxLines = 1) },
-                                        colors = NavigationBarItemDefaults.colors(
-                                            selectedIconColor = MaterialTheme.colorScheme.primary,
-                                            selectedTextColor = MaterialTheme.colorScheme.primary,
-                                            indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
-                                        ),
-                                        modifier = Modifier.testTag("bottom_nav_${section.route}"),
-                                    )
-                                }
                             }
-                        }
-                    },
-                ) { innerPadding ->
-                    Surface(
-                        color = MaterialTheme.colorScheme.background,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(innerPadding),
-                    ) {
-                        when (currentSection) {
-                            SurakshaSection.OVERVIEW -> OverviewScreen(
-                                settings = settings,
-                                networkState = networkState,
-                                pendingSyncCount = pendingSyncOps.size,
-                                organizationState = orgState,
-                                currentRole = currentRole,
-                                analytics = analytics,
-                                filter = dashboardFilter,
-                                teamsState = teamsState,
-                                locationsState = locationsState,
-                                signalsState = signalsState,
-                                registryState = registryState,
-                                incidentsState = incidentsState,
-                                adapters = sensorAdapters,
-                                deviceLocation = deviceLocation,
-                                tileManager = viewModel.tileManager,
-                                aiTriageState = aiTriageState,
-                                aiChatAnswer = aiChatAnswer,
-                                aiChatLoading = aiChatLoading,
-                                exportedReportText = exportedReportText,
-                                onUpdateFilter = viewModel::updateDashboardFilter,
-                                onRetrySync = viewModel::flushOfflineQueueNow,
-                                onRunAiTriage = viewModel::runAiTriage,
-                                onAskAiQuestion = viewModel::askAiQuestion,
-                                onExportCsvReport = viewModel::exportOperationalCsvReport,
-                                onClearExportedReport = viewModel::clearExportedReport,
-                                onNavigateSection = { currentSection = it },
-                            )
-                            SurakshaSection.LIVE_MAP -> LiveMapScreen(
-                                settings = settings,
-                                networkState = networkState,
-                                currentRole = currentRole,
-                                locationsState = locationsState,
-                                teamsState = teamsState,
-                                signalsState = signalsState,
-                                registryState = registryState,
-                                layers = mapLayers,
-                                offlineRegions = offlineRegions,
-                                downloadProgress = downloadProgress,
-                                totalCachedTiles = totalCachedTiles,
-                                totalCachedBytes = totalCachedBytes,
-                                deviceLocation = deviceLocation,
-                                tileManager = viewModel.tileManager,
-                                searchResults = mapSearchResults,
-                                onSearchPlaces = viewModel::searchMapPlaces,
-                                onClearSearch = viewModel::clearMapSearch,
-                                onUpdateLayers = viewModel::updateMapLayers,
-                                onToggleOfflineMode = viewModel::setOfflineMapMode,
-                                onStartRegionDownload = viewModel::startOfflineRegionDownload,
-                                onCancelRegionDownload = viewModel::cancelOfflineRegionDownload,
-                                onDeleteRegionCache = viewModel::deleteOfflineRegion,
-                                onRegisterLocation = viewModel::registerDisasterLocation,
-                            )
-                            SurakshaSection.ENV_MAPPING -> EnvironmentMappingScreen(
-                                settings = settings,
-                                networkState = networkState,
-                                slamFrame = slamFrame,
-                                selectedScenario = selectedScenario,
-                                sweepProgress = sweepProgress,
-                                isScanning = isScanning,
-                                slamSessions = slamSessions,
-                                onSelectScenario = viewModel::selectEnvScenario,
-                                onSweepProgressChange = viewModel::setSweepProgress,
-                                onToggleScanning = viewModel::toggleSlamScanning,
-                                onSaveAndExport = viewModel::saveAndExportSlamSession,
-                            )
-                            SurakshaSection.HUMAN_PRESENCE -> HumanPresenceScreen(
-                                settings = settings,
-                                networkState = networkState,
-                                currentRole = currentRole,
-                                signalsState = signalsState,
-                                onReviewSignal = viewModel::reviewPresenceSignal,
-                                onAddSignal = viewModel::logPresenceObservation,
-                            )
-                            SurakshaSection.RESCUE_TEAMS -> {
-                                val repo = remember(currentUserId) { SurakshaRepository(context) }
-                                RescueTeamsScreen(
-                                    settings = settings,
-                                    networkState = networkState,
-                                    currentRole = currentRole,
-                                    profileState = profileState,
-                                    teamsState = teamsState,
-                                    incidentsState = incidentsState,
-                                    deviceLocation = deviceLocation,
-                                    observeAuditLogs = { incidentId ->
-                                        repo.observeSosAuditLogs(activeOrgId, incidentId)
-                                    },
-                                    onTogglePersonalLocationSharing = viewModel::updateVoluntaryLocationSharing,
-                                    onToggleTeamLocationSharing = viewModel::toggleTeamLocationSharing,
-                                    onRegisterTeam = viewModel::registerRescueTeam,
-                                    onCreateSosIncident = viewModel::createSosIncident,
-                                    onTransitionSos = viewModel::transitionSosIncident,
+                        },
+                        actions = {
+                            IconButton(
+                                onClick = { currentSection = SurakshaSection.SETTINGS },
+                                modifier = Modifier.testTag("topbar_settings_button"),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Settings,
+                                    contentDescription = "Settings and Profile",
+                                    tint = MaterialTheme.colorScheme.primary,
                                 )
                             }
-                            SurakshaSection.RESCUE_REGISTRY -> RescueRegistryScreen(
-                                settings = settings,
-                                networkState = networkState,
-                                currentRole = currentRole,
-                                registryState = registryState,
-                                findDuplicateMatch = viewModel::findDuplicateRegistryMatch,
-                                onTogglePiiReveal = viewModel::setRevealSensitivePii,
-                                onCreateEntry = viewModel::createRegistryEntry,
-                                onAdvanceEntry = viewModel::advanceRegistryEntry,
-                            )
-                            SurakshaSection.SENSOR_STATUS -> SensorStatusScreen(
-                                settings = settings,
-                                networkState = networkState,
-                                adapters = sensorAdapters,
-                                cachedLogs = cachedSensorLogs,
-                                onSaveGatewayUrl = viewModel::setHardwareGatewayUrl,
-                                onPollAdapter = viewModel::pollSensorAdapter,
-                            )
-                            SurakshaSection.SETTINGS -> SettingsScreen(
-                                settings = settings,
-                                networkState = networkState,
-                                currentRole = currentRole,
-                                profileState = profileState,
-                                organizationState = orgState,
-                                membersState = membersState,
-                                invitesState = invitesState,
-                                offlineRegions = offlineRegions,
-                                pendingSyncOps = pendingSyncOps,
-                                onToggleDemoMode = viewModel::setDemoMode,
-                                onToggleOfflineMode = viewModel::setOfflineMapMode,
-                                onTogglePiiReveal = viewModel::setRevealSensitivePii,
-                                onToggleDarkTheme = viewModel::setDarkThemeEnabled,
-                                onSetLanguage = viewModel::setLanguageCode,
-                                onSeedDemoData = viewModel::seedDemoDataset,
-                                onCreateOrganization = viewModel::createOrganization,
-                                onJoinOrganization = viewModel::joinOrganization,
-                                onGenerateInvite = viewModel::generateOrgInvite,
-                                onUpdateMemberRole = viewModel::updateMemberRole,
-                                onMigrateLegacyData = viewModel::migrateLegacyData,
-                                onFlushSyncQueue = viewModel::flushOfflineQueueNow,
-                                onSignOut = {
-                                    viewModel.updateVoluntaryLocationSharing(false)
-                                    signOutResponder(
-                                        credentialManager = credentialManager,
-                                        scope = scope,
-                                    )
-                                },
-                            )
+                        },
+                    )
+                },
+                bottomBar = {
+                    if (!useRail) {
+                        NavigationBar(
+                            containerColor = MaterialTheme.colorScheme.surface,
+                            tonalElevation = 0.dp,
+                            windowInsets = WindowInsets.navigationBars,
+                        ) {
+                            primaryTabs.forEach { section ->
+                                val label = sectionLocalizedTitle(localizedContext, section)
+                                NavigationBarItem(
+                                    selected = currentSection == section,
+                                    onClick = { currentSection = section },
+                                    icon = { Icon(sectionIcon(section), contentDescription = label) },
+                                    label = { Text(label, maxLines = 1) },
+                                    colors = NavigationBarItemDefaults.colors(
+                                        selectedIconColor = MaterialTheme.colorScheme.primary,
+                                        selectedTextColor = MaterialTheme.colorScheme.primary,
+                                        indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
+                                    ),
+                                    modifier = Modifier.testTag("bottom_nav_${section.route}"),
+                                )
+                            }
                         }
+                    }
+                },
+            ) { innerPadding ->
+                Surface(
+                    color = MaterialTheme.colorScheme.background,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding),
+                ) {
+                    when (currentSection) {
+                        SurakshaSection.MISSIONS -> MissionsDashboardScreen(
+                            settings = settings,
+                            networkState = networkState,
+                            pendingSyncCount = pendingSyncOps.size,
+                            currentRole = currentRole,
+                            isMembershipRevoked = isMembershipRevoked,
+                            organizationState = orgState,
+                            joinedOrgs = joinedOrgs,
+                            teamsState = teamsState,
+                            missionsState = missionsState,
+                            activeMission = activeMission,
+                            memberLocations = effectiveMemberLocations,
+                            sensorDevices = effectiveSensorDevices,
+                            sensorEvents = effectiveSensorEvents,
+                            sosAlertsState = sosAlertsState,
+                            separationWarnings = separationWarnings,
+                            locationFixState = locationFixState,
+                            onCreateOrganization = viewModel::createOrganization,
+                            onJoinOrganization = viewModel::joinOrganization,
+                            onSelectWorkspace = viewModel::selectWorkspace,
+                            onCreateMission = viewModel::createMission,
+                            onUpdateMissionSettings = viewModel::updateMissionSettings,
+                            onToggleLocationSharing = viewModel::updateVoluntaryLocationSharing,
+                            onDismissBatteryPrompt = viewModel::dismissBatteryOptimizationPrompt,
+                            onTriggerSos = { desc -> viewModel.triggerSosAlert(desc) },
+                            onOpenRadar = { currentSection = SurakshaSection.RADAR },
+                            onFlushSync = viewModel::flushOfflineQueueNow,
+                        )
+
+                        SurakshaSection.RADAR -> RadarMapScreen(
+                            settings = settings,
+                            networkState = networkState,
+                            currentUserId = currentUserId,
+                            activeMission = activeMission,
+                            radarTargets = radarTargets,
+                            memberLocations = effectiveMemberLocations,
+                            sensorDevices = effectiveSensorDevices,
+                            sensorEvents = effectiveSensorEvents,
+                            sosAlertsState = sosAlertsState,
+                            headingState = headingState,
+                            deviceLocation = locationFixState,
+                            mapLayers = mapLayers,
+                            mapSearchResults = mapSearchResults,
+                            tileManager = viewModel.tileManager,
+                            onSetRadarRange = viewModel::setRadarRangeMeters,
+                            onSetNorthUp = viewModel::setNorthUpMode,
+                            onUpdateMapLayers = viewModel::updateMapLayers,
+                            onSearchPlaces = viewModel::searchMapPlaces,
+                            onClearSearch = viewModel::clearMapSearch,
+                            onLogObservation = viewModel::logDetectionObservation,
+                            onTriggerSos = { desc -> viewModel.triggerSosAlert(desc) },
+                            onTransitionSos = viewModel::transitionSosAlert,
+                        )
+
+                        SurakshaSection.SENSORS -> SensorsHubScreen(
+                            settings = settings,
+                            networkState = networkState,
+                            currentRole = currentRole,
+                            hardwareCatalog = viewModel.hardwareCatalog,
+                            sensorDevices = effectiveSensorDevices,
+                            sensorEvents = effectiveSensorEvents,
+                            gatewayStatusText = gatewayStatusText,
+                            maskedGatewayToken = viewModel.tokenStorage.maskedTokenPreview(),
+                            onSaveGatewayConfig = viewModel::registerGatewayAndSaveConfig,
+                            onPollGateway = viewModel::pollConfiguredGateway,
+                            onValidateAndIngestJson = viewModel::validateAndIngestGatewayJson,
+                            onToggleDevDemoMode = viewModel::setDevDemoMode,
+                        )
+
+                        SurakshaSection.TEAM -> TeamAdminScreen(
+                            currentUserId = currentUserId,
+                            currentRole = currentRole,
+                            isMembershipRevoked = isMembershipRevoked,
+                            organizationState = orgState,
+                            membersState = membersState,
+                            blockedMembersState = blockedMembersState,
+                            invitationsState = invitationsState,
+                            teamsState = teamsState,
+                            auditLogsState = auditLogsState,
+                            onToggleAllowMemberInvites = viewModel::toggleAllowMemberInvites,
+                            onCreateInvitation = viewModel::createInvitation,
+                            onApproveOrRejectInvite = viewModel::approveOrRejectInvitation,
+                            onUpdateMemberRole = viewModel::updateMemberRole,
+                            onRemoveAndBlockMember = viewModel::removeAndBlockMember,
+                            onReinstateBlockedMember = viewModel::reinstateBlockedMember,
+                            onCreateTeam = viewModel::createTeam,
+                        )
+
+                        SurakshaSection.SETTINGS -> SettingsProfileScreen(
+                            settings = settings,
+                            networkState = networkState,
+                            currentRole = currentRole,
+                            profileState = profileState,
+                            offlineRegions = offlineRegions,
+                            downloadProgress = downloadProgress,
+                            totalCachedTiles = totalCachedTiles,
+                            totalCachedBytes = totalCachedBytes,
+                            pendingSyncOps = pendingSyncOps,
+                            syncHistory = syncHistory,
+                            onUpdateProfile = viewModel::updateProfileDetails,
+                            onToggleDarkTheme = viewModel::setDarkThemeEnabled,
+                            onSetLanguage = viewModel::setLanguageCode,
+                            onToggleOfflineMapMode = viewModel::setOfflineMapMode,
+                            onStartRegionDownload = { reg -> viewModel.startOfflineRegionDownload(reg) },
+                            onCancelRegionDownload = viewModel::cancelOfflineRegionDownload,
+                            onDeleteRegionCache = viewModel::deleteOfflineRegion,
+                            onFlushSyncQueue = viewModel::flushOfflineQueueNow,
+                            onSyncPushToken = viewModel::syncPushRegistration,
+                            onSignOut = {
+                                viewModel.updateVoluntaryLocationSharing(false)
+                                signOutResponder(
+                                    credentialManager = credentialManager,
+                                    scope = scope,
+                                )
+                            },
+                        )
                     }
                 }
             }
@@ -585,25 +483,19 @@ fun SurakshaAuthenticatedShell(
 }
 
 private fun sectionIcon(section: SurakshaSection): ImageVector = when (section) {
-    SurakshaSection.OVERVIEW -> Icons.Filled.Dashboard
-    SurakshaSection.LIVE_MAP -> Icons.Filled.Map
-    SurakshaSection.ENV_MAPPING -> Icons.Filled.Radar
-    SurakshaSection.HUMAN_PRESENCE -> Icons.Filled.PersonSearch
-    SurakshaSection.RESCUE_TEAMS -> Icons.Filled.Groups
-    SurakshaSection.RESCUE_REGISTRY -> Icons.AutoMirrored.Filled.Assignment
-    SurakshaSection.SENSOR_STATUS -> Icons.Filled.Sensors
+    SurakshaSection.MISSIONS -> Icons.Filled.Dashboard
+    SurakshaSection.RADAR -> Icons.Filled.Radar
+    SurakshaSection.SENSORS -> Icons.Filled.Sensors
+    SurakshaSection.TEAM -> Icons.Filled.Groups
     SurakshaSection.SETTINGS -> Icons.Filled.Settings
 }
 
 private fun sectionLocalizedTitle(localizedContext: Context, section: SurakshaSection): String {
     val resId = when (section) {
-        SurakshaSection.OVERVIEW -> R.string.nav_overview
-        SurakshaSection.LIVE_MAP -> R.string.nav_live_map
-        SurakshaSection.ENV_MAPPING -> R.string.nav_env_map
-        SurakshaSection.HUMAN_PRESENCE -> R.string.nav_presence
-        SurakshaSection.RESCUE_TEAMS -> R.string.nav_teams
-        SurakshaSection.RESCUE_REGISTRY -> R.string.nav_registry
-        SurakshaSection.SENSOR_STATUS -> R.string.nav_sensors
+        SurakshaSection.MISSIONS -> R.string.nav_missions
+        SurakshaSection.RADAR -> R.string.nav_radar
+        SurakshaSection.SENSORS -> R.string.nav_sensors
+        SurakshaSection.TEAM -> R.string.nav_team
         SurakshaSection.SETTINGS -> R.string.nav_settings
     }
     return localizedContext.getString(resId)

@@ -104,7 +104,11 @@ class OfflineSyncAndCacheTest {
         rawDb.close()
 
         val migratedDb = Room.databaseBuilder(context, SurakshaLocalDatabase::class.java, dbName)
-            .addMigrations(SurakshaLocalDatabase.MIGRATION_1_2)
+            .addMigrations(
+                SurakshaLocalDatabase.MIGRATION_1_2,
+                SurakshaLocalDatabase.MIGRATION_2_3,
+                SurakshaLocalDatabase.MIGRATION_3_4,
+            )
             .allowMainThreadQueries()
             .build()
 
@@ -187,16 +191,18 @@ class OfflineSyncAndCacheTest {
         // Simulate online validated unmetered network
         simulatedNetworkState = NetworkState.ONLINE_UNMETERED
 
-        // First flush fails -> retryCount increments and status becomes sync_failed
+        // First flush fails -> retryCount increments, status becomes sync_failed, and exponential backoff is scheduled
         val failedFlush = syncManager.flushPendingQueue()
         assertEquals(0 to 1, failedFlush)
-        val failedRow = dao.getRetryableOperations().first()
+        val failedRow = dao.getPendingOperationById("op_fixed_123")!!
         assertEquals(1, failedRow.retryCount)
         assertEquals(SyncStatus.FAILED.value, failedRow.syncStatus)
+        assertTrue(failedRow.nextRetryAtMillis > System.currentTimeMillis() - 1000L)
+        assertEquals(1, dao.getRetryableOperations(System.currentTimeMillis() + 20_000L).size)
 
-        // Second flush succeeds -> row removed from pending queue
+        // Retry with forceIgnoreBackoff succeeds -> row removed from pending queue
         shouldFailNext = false
-        val okFlush = syncManager.flushPendingQueue()
+        val okFlush = syncManager.flushPendingQueue(forceIgnoreBackoff = true)
         assertEquals(1 to 0, okFlush)
         assertTrue(dao.observePendingSyncOperations().first().isEmpty())
         assertEquals(2, executedIds.size)
@@ -251,8 +257,128 @@ class OfflineSyncAndCacheTest {
         assertFalse(dummyTileFile.exists())
         assertEquals(0, dao.countTilesForRegion("india_north_himalaya"))
         assertEquals(0L, dao.sumTileBytesForRegion("india_north_himalaya"))
-        val regionAfterDelete = dao.getRegionById("india_north_himalaya")
+        val regionAfterDelete = dao.observeOfflineRegions().first().firstOrNull { it.regionId == "india_north_himalaya" }
         assertNotNull(regionAfterDelete)
         assertFalse(regionAfterDelete!!.isDownloaded)
+    }
+
+    @Test
+    fun migration3To4_dropsOldTablesAndPersistsRadarMissionCaches() = runBlocking {
+        val dbName = "migration_v3_v4_test.db"
+        context.deleteDatabase(dbName)
+        val dbPath = context.getDatabasePath(dbName)
+        dbPath.parentFile?.mkdirs()
+
+        val rawDb = SQLiteDatabase.openOrCreateDatabase(dbPath, null)
+        rawDb.execSQL("CREATE TABLE IF NOT EXISTS offline_map_regions (regionId TEXT NOT NULL PRIMARY KEY, title TEXT NOT NULL, boundingBoxLabel TEXT NOT NULL, tileCount INTEGER NOT NULL, sizeMb REAL NOT NULL, isDownloaded INTEGER NOT NULL, lastSyncedMillis INTEGER NOT NULL, attribution TEXT NOT NULL, minLat REAL NOT NULL DEFAULT 28.0, maxLat REAL NOT NULL DEFAULT 36.0, minLon REAL NOT NULL DEFAULT 73.0, maxLon REAL NOT NULL DEFAULT 81.0, minZoom INTEGER NOT NULL DEFAULT 6, maxZoom INTEGER NOT NULL DEFAULT 8, tilesStored INTEGER NOT NULL DEFAULT 0, bytesStored INTEGER NOT NULL DEFAULT 0, dataVersion TEXT NOT NULL DEFAULT 'topo-raster-v2')")
+        rawDb.execSQL("CREATE TABLE IF NOT EXISTS cached_map_tiles (tileKey TEXT NOT NULL PRIMARY KEY, regionId TEXT NOT NULL, layerKind TEXT NOT NULL, zoom INTEGER NOT NULL, x INTEGER NOT NULL, y INTEGER NOT NULL, localPath TEXT NOT NULL, byteSize INTEGER NOT NULL, downloadedAtMillis INTEGER NOT NULL, dataVersion TEXT NOT NULL)")
+        rawDb.execSQL("CREATE TABLE IF NOT EXISTS pending_sync_operations (operationId TEXT NOT NULL PRIMARY KEY, orgId TEXT NOT NULL, entityType TEXT NOT NULL, payloadJson TEXT NOT NULL, syncStatus TEXT NOT NULL, retryCount INTEGER NOT NULL, lastError TEXT NOT NULL, createdAtMillis INTEGER NOT NULL, updatedAtMillis INTEGER NOT NULL, idempotencyKey TEXT NOT NULL DEFAULT '', nextRetryAtMillis INTEGER NOT NULL DEFAULT 0, conflictNote TEXT NOT NULL DEFAULT '')")
+        rawDb.execSQL("CREATE TABLE IF NOT EXISTS sync_history (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, operationId TEXT NOT NULL, orgId TEXT NOT NULL, entityType TEXT NOT NULL, outcome TEXT NOT NULL, detail TEXT NOT NULL, syncedAtMillis INTEGER NOT NULL)")
+        rawDb.execSQL("CREATE TABLE IF NOT EXISTS joined_organizations (orgId TEXT NOT NULL PRIMARY KEY, orgName TEXT NOT NULL, orgCode TEXT NOT NULL, role TEXT NOT NULL, lastAccessedMillis INTEGER NOT NULL)")
+        rawDb.execSQL("CREATE TABLE IF NOT EXISTS slam_sessions (sessionId TEXT NOT NULL PRIMARY KEY)")
+        rawDb.execSQL("CREATE TABLE IF NOT EXISTS cached_sensor_logs (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL)")
+        rawDb.version = 3
+        rawDb.close()
+
+        val migratedDb = Room.databaseBuilder(context, SurakshaLocalDatabase::class.java, dbName)
+            .addMigrations(SurakshaLocalDatabase.MIGRATION_3_4)
+            .allowMainThreadQueries()
+            .build()
+
+        try {
+            val dao = migratedDb.localDao()
+            val cacheRepo = OfflineCacheRepository(dao)
+            val now = 1_750_000_000_000L
+            cacheRepo.cacheMissionLocations(
+                "mission_v4",
+                listOf(
+                    CachedMemberLocationEntity(
+                        cacheKey = "mission_v4:u1",
+                        orgId = "org_1",
+                        missionId = "mission_v4",
+                        userId = "u1",
+                        displayName = "Aarav",
+                        callsign = "SAR-01",
+                        role = "TEAM_MEMBER",
+                        sharingEnabled = true,
+                        hasValidLocation = true,
+                        latitude = 30.55,
+                        longitude = 79.56,
+                        accuracyMeters = 9.0,
+                        headingDegrees = 45.0,
+                        headingReliable = true,
+                        batteryPercent = 90L,
+                        connectionStatus = "online",
+                        locationTimestampMillis = now,
+                        unavailableReason = "",
+                        cachedAtMillis = now,
+                    )
+                ),
+            )
+            cacheRepo.cacheSensorHealth(
+                listOf(
+                    CachedSensorHealthEntity(
+                        sensorId = "uwb_01",
+                        orgId = "org_1",
+                        missionId = "mission_v4",
+                        sensorType = "uwb_life_detection_radar",
+                        displayName = "UWB-01",
+                        connectionStatus = "connected",
+                        healthState = "healthy",
+                        lastHeartbeatMillis = now,
+                        packetsReceived = 5L,
+                        packetsRejected = 0L,
+                        diagnosticNote = "OK",
+                        cachedAtMillis = now,
+                    )
+                )
+            )
+            cacheRepo.cacheSensorEvents(
+                listOf(
+                    CachedSensorEventEntity(
+                        eventId = "ev_1",
+                        orgId = "org_1",
+                        missionId = "mission_v4",
+                        sensorId = "uwb_01",
+                        sensorType = "uwb_life_detection_radar",
+                        timestampUtcMillis = now,
+                        detectionType = "UNCLASSIFIED POSSIBLE HUMAN PRESENCE",
+                        estimatedRangeMeters = 12.0,
+                        estimatedAzimuthDegrees = 80.0,
+                        estimatedLatitude = null,
+                        estimatedLongitude = null,
+                        confidence = 0.88,
+                        signalQuality = "good",
+                        sourceDevice = "UWB-01",
+                        dataValidity = "valid",
+                        status = "active",
+                        cachedAtMillis = now,
+                    )
+                )
+            )
+            assertEquals(1, dao.observeCachedMemberLocations("mission_v4").first().size)
+            assertEquals(1, dao.observeCachedSensorHealth("mission_v4").first().size)
+            assertEquals(1, dao.observeCachedSensorEvents("mission_v4").first().size)
+        } finally {
+            migratedDb.close()
+            context.deleteDatabase(dbName)
+        }
+    }
+
+    @Test
+    fun secureTokenStorage_savesMasksAndClearsGatewayToken() {
+        val vault = SecureTokenStorage(context)
+        vault.clearGatewayToken()
+        assertFalse(vault.hasGatewayToken())
+        assertEquals("Not configured", vault.maskedTokenPreview())
+
+        vault.saveGatewayToken("gw_live_secret_token_987")
+        assertTrue(vault.hasGatewayToken())
+        assertEquals("gw_live_secret_token_987", vault.getGatewayToken())
+        assertEquals("gw_••••987", vault.maskedTokenPreview())
+
+        vault.clearGatewayToken()
+        assertFalse(vault.hasGatewayToken())
+        assertEquals("", vault.getGatewayToken())
     }
 }

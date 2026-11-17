@@ -47,7 +47,8 @@ class SurakshaMessagingService : FirebaseMessagingService() {
         val body = message.notification?.body
             ?: message.data["body"]
             ?: "Incoming disaster alert (${message.data["teamCode"] ?: "FIELD"})"
-        val incidentId = message.data["incidentId"].orEmpty()
+        val incidentId = message.data["alertId"]?.takeIf { it.isNotBlank() }
+            ?: message.data["incidentId"].orEmpty()
 
         showSosNotification(title, body, incidentId)
     }
